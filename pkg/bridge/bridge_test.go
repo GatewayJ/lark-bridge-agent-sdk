@@ -605,11 +605,15 @@ printf '%s\n' '{"type":"turn.completed"}'
 		t.Fatalf("Emit message returned error: %v", err)
 	}
 	messages := waitBridgeSentMessages(t, transport, 1)
-	if got := messages[0].Content.Markdown; !strings.Contains(got, "pong from codex") {
+	if got := messages[0].Content.Markdown; !strings.Contains(got, "正在思考") {
 		t.Fatalf("managed IM reply markdown = %q", got)
 	}
 	if messages[0].Options.ReplyTo != "om_user_1" {
 		t.Fatalf("reply target = %#v", messages[0].Options)
+	}
+	updates := waitBridgeUpdatedMessages(t, transport, 1)
+	if got := updates[len(updates)-1].Content.Markdown; !strings.Contains(got, "pong from codex") {
+		t.Fatalf("managed IM updated markdown = %q", got)
 	}
 	prompt := readBridgeFile(t, filepath.Join(cwd, "prompt.txt"))
 	for _, fragment := range []string{"bridge_context", "hello from lark", "ou_bot", "Alice"} {
@@ -700,7 +704,7 @@ printf '%s\n' '{"type":"turn.completed"}'
 	}); err != nil {
 		t.Fatalf("Emit message returned error: %v", err)
 	}
-	_ = waitBridgeSentMessages(t, transport, 1)
+	_ = waitBridgeUpdatedMessages(t, transport, 1)
 	select {
 	case target := <-targets:
 		if target.MessageID != "om_quote" || target.SourceMessageID != "om_reply" {
@@ -785,7 +789,7 @@ printf '%s\n' '{"type":"turn.completed"}'
 	}); err != nil {
 		t.Fatalf("Emit message returned error: %v", err)
 	}
-	_ = waitBridgeSentMessages(t, transport, 1)
+	_ = waitBridgeUpdatedMessages(t, transport, 1)
 	select {
 	case target := <-targets:
 		t.Fatalf("quote resolver called for topic root: %#v", target)
@@ -1817,7 +1821,7 @@ printf '%s\n' '{"type":"turn.completed"}'
 	}); err != nil {
 		t.Fatalf("Emit attachment message returned error: %v", err)
 	}
-	_ = waitBridgeSentMessages(t, transport, 1)
+	_ = waitBridgeUpdatedMessages(t, transport, 1)
 	prompt := readBridgeFile(t, filepath.Join(cwd, "prompt.txt"))
 	for _, fragment := range []string{"attachments", "om_attach", "accepted", "optional", "text/plain"} {
 		if !strings.Contains(prompt, fragment) {
@@ -1890,10 +1894,11 @@ printf '%s\n' '{"type":"turn.completed"}'
 	}); err != nil {
 		t.Fatalf("Emit attachment message returned error: %v", err)
 	}
-	messages := waitBridgeSentMessages(t, transport, 1)
-	finalContent := messages[0].Content.Markdown + messages[0].Content.Text
+	_ = waitBridgeSentMessages(t, transport, 1)
+	updates := waitBridgeUpdatedMessages(t, transport, 1)
+	finalContent := updates[len(updates)-1].Content.Markdown + updates[len(updates)-1].Content.Text
 	if !strings.Contains(finalContent, "continued despite attachment") {
-		t.Fatalf("final reply = %#v", messages[0])
+		t.Fatalf("final reply = %#v", updates[len(updates)-1])
 	}
 	prompt := readBridgeFile(t, filepath.Join(cwd, "prompt.txt"))
 	for _, fragment := range []string{"attachments", "om_attach", "optional", "rejected", "file-too-large"} {
@@ -2048,6 +2053,24 @@ func waitBridgeSentMessages(t *testing.T, transport *FakeLarkTransport, count in
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for sent messages; got %#v", messages)
+		case <-tick.C:
+		}
+	}
+}
+
+func waitBridgeUpdatedMessages(t *testing.T, transport *FakeLarkTransport, count int) []LarkUpdateMessageRequest {
+	t.Helper()
+	deadline := time.After(bridgeTestWaitTimeout())
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		messages := transport.UpdatedMessageSnapshot()
+		if len(messages) >= count {
+			return messages
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for updated messages; got %#v", messages)
 		case <-tick.C:
 		}
 	}

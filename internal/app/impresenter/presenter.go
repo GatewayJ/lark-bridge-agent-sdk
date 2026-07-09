@@ -116,6 +116,15 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 		cardMessageID = result.MessageID
 		lastCardUpdate = time.Now()
 	}
+	if normalizeReplyMode(input.ReplyMode) == ReplyMarkdown && !input.DeferUntilDone {
+		state = cardrender.Reduce(state, cardrender.Event{Type: cardrender.EventSystem})
+		messageID, err := streamMarkdown(ctx, input, state, markdownMessageID)
+		if err != nil {
+			return state, err
+		}
+		markdownMessageID = messageID
+		lastMarkdownUpdate = time.Now()
+	}
 	idleFired := false
 	if input.Run != nil {
 		events := input.Run.Events(ctx)

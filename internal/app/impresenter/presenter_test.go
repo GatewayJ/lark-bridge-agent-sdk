@@ -220,7 +220,7 @@ func TestPresentMarkdownModeStreamsThrottledUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Present returned error: %v", err)
 	}
-	if len(ch.messages) != 1 || !strings.Contains(ch.messages[0].Content.Markdown, "hello") {
+	if len(ch.messages) != 1 || !strings.Contains(ch.messages[0].Content.Markdown, "正在思考") {
 		t.Fatalf("messages = %#v", ch.messages)
 	}
 	if len(ch.messageUpdates) < 2 {
