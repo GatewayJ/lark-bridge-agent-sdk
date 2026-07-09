@@ -1059,6 +1059,7 @@ printf '%s\n' '{"type":"turn.completed"}'
 	intake := newManagedLarkIntake(managedLarkIntakeOptions{
 		Client:    client,
 		Transport: transport,
+		Managed:   LarkManagedOptions{CardActionSettle: 10 * time.Millisecond},
 	})
 
 	result, err := intake.Dispatch(context.Background(), LarkCardActionInput{
@@ -1074,12 +1075,30 @@ printf '%s\n' '{"type":"turn.completed"}'
 	if result.Outcome != CardDispatchCommand {
 		t.Fatalf("result = %#v", result)
 	}
-	updates := transport.UpdatedCardSnapshot()
+	updates := waitBridgeUpdatedCards(t, transport, 1)
 	if len(updates) != 1 || updates[0].MessageID != "om_config_card" || !strings.Contains(mustBridgeCardJSON(t, updates[0].Card), "已取消") {
 		t.Fatalf("updates = %#v", updates)
 	}
+
+	result, err = intake.Dispatch(context.Background(), LarkCardActionInput{
+		MessageID:   "om_account_card",
+		ChatID:      "oc_dm",
+		ChatType:    LarkChatTypeP2P,
+		Operator:    LarkActor{OpenID: "ou_user", Name: "Alice"},
+		ActionValue: map[string]any{"cmd": "account.cancel"},
+	})
+	if err != nil {
+		t.Fatalf("account Dispatch returned error: %v", err)
+	}
+	if result.Outcome != CardDispatchCommand {
+		t.Fatalf("account result = %#v", result)
+	}
+	updates = waitBridgeUpdatedCards(t, transport, 2)
+	if updates[1].MessageID != "om_account_card" || !strings.Contains(mustBridgeCardJSON(t, updates[1].Card), "已取消") {
+		t.Fatalf("account updates = %#v", updates)
+	}
 	if got := transport.SentMessageSnapshot(); len(got) != 0 {
-		t.Fatalf("sent messages = %#v, want card update only", got)
+		t.Fatalf("sent messages = %#v, want card updates only", got)
 	}
 }
 
@@ -1323,6 +1342,47 @@ func TestBridgeManagedLarkIntakeAccountFailureUpdatesOldCardAndSendsRetryForm(t 
 	}
 	if strings.Contains(retryJSON, "new-secret") || strings.Contains(retryJSON, "App 凭据校验失败") {
 		t.Fatalf("retry form leaked sensitive/error state: %s", retryJSON)
+	}
+}
+
+func TestBridgeManagedLarkIntakeCancelActionsUpdateOriginalCard(t *testing.T) {
+	transport := NewFakeLarkTransport(LarkBotIdentity{OpenID: "ou_bot", Name: "Bot"})
+	intake := newManagedLarkIntake(managedLarkIntakeOptions{Transport: transport})
+	defer intake.Close()
+	scope := appintake.Scope{Key: "oc_dm", ChatMode: appintake.ChatModeP2P}
+
+	if err := intake.sendCommandResponse(context.Background(), appintake.MessageInput{
+		MessageID:      "om_config_form",
+		ChatID:         "oc_dm",
+		RawContentType: "card_action",
+	}, scope, CommandResponse{
+		Kind:    CommandResponseConfig,
+		Handled: true,
+		Config:  &CommandConfigView{Action: "cancel"},
+	}); err != nil {
+		t.Fatalf("config cancel sendCommandResponse returned error: %v", err)
+	}
+	if err := intake.sendCommandResponse(context.Background(), appintake.MessageInput{
+		MessageID:      "om_account_form",
+		ChatID:         "oc_dm",
+		RawContentType: "card_action",
+	}, scope, CommandResponse{
+		Kind:    CommandResponseAccount,
+		Handled: true,
+		Account: &CommandAccountView{Action: "cancel"},
+	}); err != nil {
+		t.Fatalf("account cancel sendCommandResponse returned error: %v", err)
+	}
+
+	updates := waitBridgeUpdatedCards(t, transport, 2)
+	if updates[0].MessageID != "om_config_form" || !strings.Contains(mustBridgeCardJSON(t, updates[0].Card), "已取消") {
+		t.Fatalf("config cancel update = %#v", updates[0])
+	}
+	if updates[1].MessageID != "om_account_form" || !strings.Contains(mustBridgeCardJSON(t, updates[1].Card), "已取消") {
+		t.Fatalf("account cancel update = %#v", updates[1])
+	}
+	if sent := transport.SentCardSnapshot(); len(sent) != 0 {
+		t.Fatalf("cancel actions sent fallback cards: %#v", sent)
 	}
 }
 

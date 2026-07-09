@@ -635,10 +635,10 @@ func (i *managedLarkIntake) shouldDetachCardCommand(input CardActionDispatchInpu
 		return false
 	}
 	command, args := managedCardActionCommand(input)
-	if command == "config" && strings.HasPrefix(args, "submit") {
+	if command == "config" && (strings.HasPrefix(args, "submit") || strings.HasPrefix(args, "cancel")) {
 		return true
 	}
-	if command == "account" && strings.HasPrefix(args, "submit") {
+	if command == "account" && (strings.HasPrefix(args, "submit") || strings.HasPrefix(args, "cancel")) {
 		return true
 	}
 	return false

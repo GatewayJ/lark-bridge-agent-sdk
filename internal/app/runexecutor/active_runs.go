@@ -127,20 +127,15 @@ func (a *ActiveRuns) Interrupt(ctx context.Context, scopeID string) bool {
 		return false
 	}
 	handle.MarkInterrupted()
+	delete(a.reservations, scopeID)
+	delete(a.handles, scopeID)
 	a.mu.Unlock()
 
-	_ = handle.Run.Stop(ctx)
-	a.unregisterHandle(scopeID, handle)
+	stopCtx := context.WithoutCancel(ctx)
+	go func() {
+		_ = handle.Run.Stop(stopCtx)
+	}()
 	return true
-}
-
-func (a *ActiveRuns) unregisterHandle(scopeID string, handle *RunHandle) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if existing := a.handles[scopeID]; existing == handle {
-		delete(a.reservations, scopeID)
-		delete(a.handles, scopeID)
-	}
 }
 
 func (a *ActiveRuns) StopAll(ctx context.Context) error {

@@ -1518,7 +1518,7 @@ func (s *Service) handleConfig(ctx context.Context, req Request) (Response, erro
 		if err != nil {
 			return Response{}, err
 		}
-		return Response{Handled: true, Command: "/config", Kind: ResponseConfig, NoReply: true, Config: view}, nil
+		return configResponse("已取消,未做任何修改。", view), nil
 	default:
 		return message("/config", "用法:`/config`"), nil
 	}
@@ -1621,7 +1621,7 @@ func (s *Service) handleAccount(ctx context.Context, req Request) (Response, err
 		}
 		return accountResponse(fmt.Sprintf("✅ App 凭据已保存:`%s`。", view.AppID), view), nil
 	case "cancel":
-		return Response{Handled: true, Command: "/account", Kind: ResponseAccount, NoReply: true, Account: &AccountView{Action: "cancel"}}, nil
+		return accountResponse("已取消，未做任何修改。", &AccountView{Action: "cancel"}), nil
 	default:
 		return message("/account", "用法：`/account` 或 `/account change`"), nil
 	}

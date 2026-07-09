@@ -256,6 +256,33 @@ func TestStopTimeoutAndPSBasicBehavior(t *testing.T) {
 	}
 }
 
+func TestConfigAndAccountCancelReturnTerminalResponses(t *testing.T) {
+	cfg, cap, cwd := commandTestConfig(t, profile.AgentCodex, permissions.AccessFull)
+	service := New(Options{
+		ProfileName:     "codex-dev",
+		ProfileConfig:   cfg,
+		Capability:      cap,
+		RuntimeControls: ownerControls(),
+		Sessions:        appsession.NewStore(""),
+	})
+
+	configResp, err := service.Handle(context.Background(), commandRequest("/config cancel", "scope-1", cwd, ChatModeP2P))
+	if err != nil {
+		t.Fatalf("/config cancel returned error: %v", err)
+	}
+	if configResp.NoReply || configResp.Config == nil || configResp.Config.Action != "cancel" || !strings.Contains(configResp.Markdown, "已取消") {
+		t.Fatalf("/config cancel response = %#v", configResp)
+	}
+
+	accountResp, err := service.Handle(context.Background(), commandRequest("/account cancel", "scope-1", cwd, ChatModeP2P))
+	if err != nil {
+		t.Fatalf("/account cancel returned error: %v", err)
+	}
+	if accountResp.NoReply || accountResp.Account == nil || accountResp.Account.Action != "cancel" || !strings.Contains(accountResp.Markdown, "已取消") {
+		t.Fatalf("/account cancel response = %#v", accountResp)
+	}
+}
+
 func TestNewAndResetClearSessionCatalogTimeoutAndInterrupt(t *testing.T) {
 	cfg, cap, cwd := commandTestConfig(t, profile.AgentCodex, permissions.AccessFull)
 	sessions := appsession.NewStore("")

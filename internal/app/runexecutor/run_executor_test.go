@@ -223,7 +223,7 @@ func TestStopInterruptsRunAndCleansUp(t *testing.T) {
 	}
 }
 
-func TestInterruptRejectsSameScopeUntilStopReturns(t *testing.T) {
+func TestInterruptReleasesSameScopeBeforeStopReturns(t *testing.T) {
 	run1 := newFakeRun("run-1")
 	run1.stopStarted = make(chan struct{})
 	run1.releaseStop = make(chan struct{})
@@ -240,32 +240,31 @@ func TestInterruptRejectsSameScopeUntilStopReturns(t *testing.T) {
 		interruptDone <- executor.Interrupt(context.Background(), "scope-1")
 	}()
 	select {
+	case ok := <-interruptDone:
+		if !ok {
+			t.Fatalf("Interrupt returned false")
+		}
+	case <-time.After(50 * time.Millisecond):
+		close(run1.releaseStop)
+		t.Fatalf("Interrupt blocked while Stop was still running")
+	}
+	select {
 	case <-run1.stopStarted:
 	case <-time.After(time.Second):
 		t.Fatalf("interrupt did not enter Stop")
 	}
 
-	_, err := executor.Submit(context.Background(), testInput("scope-1"))
-	var rejected *RunRejected
-	if !errors.As(err, &rejected) || rejected.Code != RunRejectedAlreadyActive {
-		t.Fatalf("expected same scope to stay active while Stop blocks, got %#v", err)
-	}
-
-	close(run1.releaseStop)
-	select {
-	case ok := <-interruptDone:
-		if !ok {
-			t.Fatalf("Interrupt returned false")
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("interrupt did not finish after Stop was released")
-	}
 	if active := executor.activeRuns.Get("scope-1"); active != nil {
-		t.Fatalf("scope remained active after Stop returned")
+		t.Fatalf("scope remained active while Stop was still running")
 	}
-	if _, err := executor.Submit(context.Background(), testInput("scope-1")); err != nil {
-		t.Fatalf("Submit after Stop returned error: %v", err)
+	second, err := executor.Submit(context.Background(), testInput("scope-1"))
+	if err != nil {
+		t.Fatalf("Submit while old Stop blocks returned error: %v", err)
 	}
+	close(run1.releaseStop)
+	close(run1.events)
+	run2.events <- doneEvent()
+	_ = collectSubscription(t, second.Subscribe(context.Background()), 1)
 }
 
 func TestFanoutDrainsWithoutSubscribers(t *testing.T) {
@@ -395,8 +394,9 @@ func TestPauseInterruptAndStopAllControls(t *testing.T) {
 	if !executor.Interrupt(context.Background(), "scope-1") {
 		t.Fatalf("Interrupt returned false")
 	}
-	if run1.stopCallCount() != 1 || active.Get("scope-1") != nil {
-		t.Fatalf("interrupt did not stop and unregister run")
+	waitUntil(t, func() bool { return run1.stopCallCount() == 1 })
+	if active.Get("scope-1") != nil {
+		t.Fatalf("interrupt did not unregister run")
 	}
 	first.cleanup(false)
 
