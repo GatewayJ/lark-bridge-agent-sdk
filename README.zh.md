@@ -10,6 +10,14 @@
 - `cmd/lark-channel-bridge`：Go CLI 入口，用于 profile / service 工作流和首次配置辅助流程。
 - `examples/codex-feishu`：最小 Go 程序示例，把飞书 / Lark app 接到本地 Codex。
 
+## 来源与致谢
+
+这个 SDK 从 JavaScript 优先的
+[lark-coding-agent-bridge](https://github.com/GatewayJ/lark-coding-agent-bridge)
+项目中拆出，并尽量保持它已经验证过的 bridge 语义、提示词契约、飞书 /
+Lark 运行行为、卡片和 telemetry 兼容性。感谢 JS 版本先把产品形态和边界跑通，
+这个 Go SDK 以它作为兼容基线。
+
 ## 安装
 
 ```sh
@@ -47,14 +55,19 @@ func main() {
 		AppSecret:        bridge.SecretReference(bridge.SecretRef{Source: bridge.SecretSourceEnv, ID: "LARK_APP_SECRET"}),
 		Tenant:           bridge.LarkCLITenantFeishu,
 		DefaultWorkspace: "./workspace",
+		Access: bridge.ConfigProfileAccess{
+			AllowedUsers: []string{"ou_xxx"},
+			Admins:       []string{"ou_xxx"},
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	instance, _, err := bridge.NewProfileBridge(ctx, bridge.ProfileBridgeOptions{
-		Home:    "./.lark-channel",
-		Profile: "codex",
+		Home:               "./.lark-channel",
+		Profile:            "codex",
+		InitialOwnerOpenID: "ou_xxx",
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -69,7 +82,9 @@ func main() {
 }
 ```
 
-带环境变量、信号处理和 owner/allowed users 的可运行版本见 [examples/codex-feishu](./examples/codex-feishu)。
+把 `ou_xxx` 替换成 app 创建人或首个授权用户的 `open_id`。空 access 列表会按
+deny-by-default 处理。带环境变量、信号处理和 owner/allowed users 的可运行版本见
+[examples/codex-feishu](./examples/codex-feishu)。
 
 ## 文档
 
@@ -81,4 +96,3 @@ func main() {
 ```sh
 go test ./...
 ```
-

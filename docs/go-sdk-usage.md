@@ -104,6 +104,10 @@ snapshot, err := bridge.BootstrapProfileConfig(bridge.BootstrapProfileOptions{
     AppSecret:        bridge.SecretReference(bridge.SecretRef{Source: bridge.SecretSourceEnv, ID: "LARK_APP_SECRET"}),
     Tenant:           bridge.LarkCLITenantFeishu,
     DefaultWorkspace: "/srv/workspaces/codex",
+    Access: bridge.ConfigProfileAccess{
+        AllowedUsers: []string{"ou_user"},
+        Admins:       []string{"ou_user"},
+    },
 })
 if err != nil {
     return err
@@ -118,6 +122,11 @@ workspace, and Codex defaults, and refuses to overwrite an existing config unles
 `SecretReference(SecretRef{...})`. Advanced callers can still use `LoadConfig`,
 `NormalizeConfig`, `SaveConfig`, and
 `WriteActiveProfile` directly.
+
+Profiles are access-controlled. Add at least one `AllowedUsers` or `Admins`
+entry when bootstrapping a bot for real use; empty access lists are
+deny-by-default unless the managed runtime can refresh and recognize the app
+owner.
 
 ## Production CLI-Equivalent Integration
 
@@ -139,6 +148,10 @@ func provisionAndStart(ctx context.Context) error {
         AppSecret:        bridge.SecretReference(bridge.SecretRef{Source: bridge.SecretSourceEnv, ID: "LARK_APP_SECRET"}),
         Tenant:           bridge.LarkCLITenantFeishu,
         DefaultWorkspace: "/srv/workspaces/codex",
+        Access: bridge.ConfigProfileAccess{
+            AllowedUsers: []string{"ou_user"},
+            Admins:       []string{"ou_user"},
+        },
     }); err != nil {
         return err
     }
@@ -180,6 +193,7 @@ instance, info, err := bridge.NewProfileBridge(ctx, bridge.ProfileBridgeOptions{
     Home:                 "/var/lib/lark-channel",
     Profile:              "codex",
     LogDir:               "/var/log/lark-channel",
+    InitialOwnerOpenID:   "ou_creator",
     SecretsGetterCommand: "/usr/local/bin/lark-channel-bridge",
 })
 if err != nil {
@@ -208,6 +222,9 @@ Important options:
   default so constructing a profile bridge does not spawn Node.js.
 - `LogDir` overrides the default JSONL log directory. If empty, logs are written
   under `<Home>/profiles/<Profile>/logs`.
+- `InitialOwnerOpenID` seeds the app creator/owner access fallback during
+  startup; the managed runtime still refreshes the canonical owner from
+  Feishu/Lark when runtime info is available.
 - `LarkTransport`, `Logger`, `Telemetry`, `CommandOptions`, and
   `AccountValidator` let production hosts replace the default OAPI,
   observability, command, and credential-validation wiring.

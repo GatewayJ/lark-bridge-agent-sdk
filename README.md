@@ -10,6 +10,15 @@ Go SDK for connecting Feishu/Lark PersonalAgent bots to local coding agents such
 - `cmd/lark-channel-bridge`: Go CLI entrypoint for profile/service workflows and first-run setup helpers.
 - `examples/codex-feishu`: minimal Go host that connects a Feishu/Lark app to local Codex.
 
+## Lineage
+
+This SDK is extracted from the JavaScript-first
+[lark-coding-agent-bridge](https://github.com/GatewayJ/lark-coding-agent-bridge)
+project and keeps its bridge semantics, prompt contract, Lark/Feishu runtime
+behavior, and card/telemetry compatibility where those behaviors are useful to
+Go hosts. Thanks to that JS implementation for proving the product shape and
+for serving as the compatibility baseline.
+
 ## Install
 
 ```sh
@@ -47,14 +56,19 @@ func main() {
 		AppSecret:        bridge.SecretReference(bridge.SecretRef{Source: bridge.SecretSourceEnv, ID: "LARK_APP_SECRET"}),
 		Tenant:           bridge.LarkCLITenantFeishu,
 		DefaultWorkspace: "./workspace",
+		Access: bridge.ConfigProfileAccess{
+			AllowedUsers: []string{"ou_xxx"},
+			Admins:       []string{"ou_xxx"},
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	instance, _, err := bridge.NewProfileBridge(ctx, bridge.ProfileBridgeOptions{
-		Home:    "./.lark-channel",
-		Profile: "codex",
+		Home:               "./.lark-channel",
+		Profile:            "codex",
+		InitialOwnerOpenID: "ou_xxx",
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -69,7 +83,10 @@ func main() {
 }
 ```
 
-For a runnable version with environment variables and signal handling, see [examples/codex-feishu](./examples/codex-feishu).
+Use the app creator or first authorized user's `open_id` for the placeholder
+`ou_xxx`. Empty access lists are intentionally deny-by-default. For a runnable
+version with environment variables and signal handling, see
+[examples/codex-feishu](./examples/codex-feishu).
 
 ## Documentation
 
@@ -81,4 +98,3 @@ For a runnable version with environment variables and signal handling, see [exam
 ```sh
 go test ./...
 ```
-
