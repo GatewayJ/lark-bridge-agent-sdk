@@ -13,7 +13,7 @@ Go SDK for connecting Feishu/Lark PersonalAgent bots to local coding agents such
 ## Lineage
 
 This SDK is extracted from the JavaScript-first
-[lark-coding-agent-bridge](https://github.com/GatewayJ/lark-coding-agent-bridge)
+[lark-coding-agent-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)
 project and keeps its bridge semantics, prompt contract, Lark/Feishu runtime
 behavior, and card/telemetry compatibility where those behaviors are useful to
 Go hosts. Thanks to that JS implementation for proving the product shape and
