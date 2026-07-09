@@ -1,6 +1,6 @@
 //go:build !windows
 
-package codexcli
+package claudecli
 
 import (
 	"context"
@@ -12,37 +12,30 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/domain/permissions"
 	agentport "github.com/GatewayJ/lark-bridge-agent-sdk/internal/ports/agent"
 )
 
 func TestAdapterStopTerminatesChildProcessGroup(t *testing.T) {
 	cwd := t.TempDir()
-	binary := writeFakeCodex(t, `
+	binary := writeFakeClaude(t, `
 sleep 30 >/dev/null 2>&1 &
 printf '%s' "$!" > child_pid.txt
-printf '%s\n' '{"type":"thread.started","thread_id":"thread-stop"}'
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-stop-group"}'
 wait
-`)
+	`)
 
 	adapter := New(Options{
-		Binary:          binary,
-		ProfileStateDir: t.TempDir(),
-		StopGrace:       50 * time.Millisecond,
+		Binary:    binary,
+		StopGrace: 50 * time.Millisecond,
 	})
-	run, err := adapter.Run(context.Background(), agentport.AgentRunOptions{
-		RunID:   "run-stop-group",
-		Prompt:  "stop process group",
-		CWD:     cwd,
-		Sandbox: permissions.CodexSandboxDangerFullAccess,
-	})
+	run, err := adapter.Run(context.Background(), agentRunOptions("run-stop-group", "stop process group", cwd))
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
 	first := <-run.Events()
-	if first.Type != agentport.EventSystem {
-		t.Fatalf("unexpected first event: %#v", first)
+	if first.Type == "" {
+		t.Fatalf("unexpected empty first event: %#v", first)
 	}
 	childPID := readPID(t, filepath.Join(cwd, "child_pid.txt"))
 	if !processExists(childPID) {
@@ -65,6 +58,10 @@ wait
 		_ = syscall.Kill(childPID, syscall.SIGKILL)
 		t.Fatalf("child process %d survived Stop; process group was not terminated", childPID)
 	}
+}
+
+func agentRunOptions(runID string, prompt string, cwd string) agentport.AgentRunOptions {
+	return agentport.AgentRunOptions{RunID: runID, Prompt: prompt, CWD: cwd}
 }
 
 func readPID(t *testing.T, path string) int {

@@ -448,11 +448,7 @@ func (r *processRun) stream(stdout io.Reader) {
 	}
 	if exitCode != 0 {
 		if !translator.TerminalEmitted() {
-			detail := r.stderrDetail()
-			if detail != "" {
-				detail = ": " + detail
-			}
-			r.emit([]agentport.AgentEvent{terminalError(fmt.Sprintf("codex exited with code %d%s", exitCode, detail))})
+			r.emit([]agentport.AgentEvent{terminalExitError("codex", exitCode, r.stderrDetail())})
 		}
 		return
 	}
@@ -552,6 +548,14 @@ func terminalError(message string) agentport.AgentEvent {
 		Message:           stringPtr(message),
 		TerminationReason: agentport.TerminationFailed,
 	}
+}
+
+func terminalExitError(name string, exitCode int, stderr string) agentport.AgentEvent {
+	message := fmt.Sprintf("%s exited with code %d", name, exitCode)
+	if strings.TrimSpace(stderr) != "" {
+		message += "; stderr omitted from chat output"
+	}
+	return terminalError(message)
 }
 
 func stringPtr(value string) *string {

@@ -62,7 +62,7 @@ func (s *SecretInput) UnmarshalJSON(data []byte) error {
 		*s = SecretReference(ref)
 		return nil
 	}
-	return fmt.Errorf("unsupported secret input JSON: %s", string(data))
+	return fmt.Errorf("unsupported secret input JSON: expected string or secret reference object")
 }
 
 type AppCredentials struct {

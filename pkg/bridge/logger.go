@@ -29,6 +29,7 @@ type JSONLLogger struct {
 	stdout        io.Writer
 	stderr        io.Writer
 	telemetry     TelemetryAdapter
+	lastFileErr   string
 }
 
 type JSONLLoggerOptions struct {
@@ -142,29 +143,56 @@ func (l *JSONLLogger) emit(level string, msg string, fields map[string]any) {
 		entry[target] = sanitizeTelemetryValue(target, value, false)
 	}
 	if l.dir != "" {
-		l.writeFile(now, entry)
+		if err := l.writeFile(now, entry); err != nil {
+			l.reportFileWriteError(err)
+		}
 	}
 	l.emitTelemetry(level, phase, event, ts, entry)
 	l.writeConsole(level, phase, event, fields)
 }
 
-func (l *JSONLLogger) writeFile(now time.Time, entry map[string]any) {
+func (l *JSONLLogger) writeFile(now time.Time, entry map[string]any) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := os.MkdirAll(l.dir, 0o700); err != nil {
-		return
+		return err
 	}
 	path := filepath.Join(l.dir, "bridge-"+now.Format("20060102")+".jsonl")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return
+		return err
 	}
 	defer file.Close()
 	line, err := json.Marshal(entry)
 	if err != nil {
+		return err
+	}
+	if _, err := file.Write(append(line, '\n')); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (l *JSONLLogger) reportFileWriteError(err error) {
+	if err == nil {
 		return
 	}
-	_, _ = file.Write(append(line, '\n'))
+	message := err.Error()
+	l.mu.Lock()
+	if l.lastFileErr == message {
+		l.mu.Unlock()
+		return
+	}
+	l.lastFileErr = message
+	stderr := l.stderr
+	telemetry := l.telemetry
+	l.mu.Unlock()
+	if stderr != nil {
+		_, _ = fmt.Fprintln(stderr, "[warn] logger.write_failed")
+	}
+	if telemetry != nil {
+		safeTelemetryEmit(telemetry, context.Background(), "logger.write_failed", map[string]any{"phase": "logger"})
+	}
 }
 
 func (l *JSONLLogger) emitTelemetry(level string, phase string, event string, ts string, entry map[string]any) {

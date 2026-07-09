@@ -2,8 +2,10 @@ package bridge
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,6 +86,17 @@ func TestBootstrapProfileConfigWritesPlainSecret(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte(`"secret": "plain-secret"`)) {
 		t.Fatalf("config.json does not contain plain secret: %s", string(data))
+	}
+}
+
+func TestSecretInputUnmarshalErrorDoesNotEchoPayload(t *testing.T) {
+	var input SecretInput
+	err := json.Unmarshal([]byte(`{"secret":"plain-secret","source":""}`), &input)
+	if err == nil {
+		t.Fatalf("expected invalid secret input error")
+	}
+	if strings.Contains(err.Error(), "plain-secret") {
+		t.Fatalf("secret input error leaked payload: %v", err)
 	}
 }
 

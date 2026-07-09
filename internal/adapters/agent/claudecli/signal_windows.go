@@ -8,6 +8,8 @@ import (
 	"strconv"
 )
 
+func prepareProcessCommand(_ *exec.Cmd) {}
+
 func terminateProcess(process *os.Process) error {
 	if process == nil {
 		return nil

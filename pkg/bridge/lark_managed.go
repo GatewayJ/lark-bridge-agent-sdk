@@ -362,6 +362,7 @@ func (i *managedLarkIntake) refreshRuntimeOwner(ctx context.Context) {
 			options.RuntimeControls.OwnerRefreshedAt = now
 			options.RuntimeControls.OwnerRefreshError = err.Error()
 		})
+		i.recordInfo(ctx, "access.owner_refresh_failed", map[string]any{"phase": "managed_owner_refresh", "appId": i.appID})
 		i.recordError(ctx, err, map[string]any{"phase": "managed_owner_refresh", "appId": i.appID})
 	} else {
 		i.updateCommandOptions(func(options *CommandOptions) {
@@ -413,6 +414,7 @@ func (i *managedLarkIntake) handleComment(ctx context.Context, event appintake.N
 	}
 	_, err := i.comments.Handle(ctx, fromInternalLarkCommentInput(*event.Comment))
 	if err != nil {
+		i.recordInfo(ctx, "comment.reply_failed", map[string]any{"phase": "managed_comment", "eventId": event.Comment.EventID})
 		i.recordError(ctx, err, map[string]any{"phase": "managed_comment", "eventId": event.Comment.EventID})
 	}
 	return nil
@@ -428,6 +430,7 @@ func (i *managedLarkIntake) handleMessage(ctx context.Context, event appintake.N
 	msg := *event.Message
 	decision := i.messageAccessDecision(msg)
 	if !decision.OK {
+		i.recordInfo(ctx, "policy.denied", managedMessageDecisionFields(msg, decision.Reason))
 		i.recordInfo(ctx, "lark.message.ignored", managedMessageDecisionFields(msg, decision.Reason))
 		if msg.ChatType != appintake.ChatTypeP2P && decision.Reason == AccessDeniedChat && msg.MentionedBot {
 			i.sendNonAllowedGroupHint(ctx, msg)
@@ -435,6 +438,7 @@ func (i *managedLarkIntake) handleMessage(ctx context.Context, event appintake.N
 		return nil
 	}
 	if msg.ChatType != appintake.ChatTypeP2P && i.client.profile.Access.RequireMentionInGroup && !msg.MentionedBot {
+		i.recordInfo(ctx, "policy.denied", managedMessageDecisionFields(msg, "missing-mention"))
 		i.recordInfo(ctx, "lark.message.ignored", managedMessageDecisionFields(msg, "missing-mention"))
 		return nil
 	}
@@ -513,6 +517,11 @@ func (i *managedLarkIntake) Dispatch(ctx context.Context, input CardActionDispat
 	i.ensureRuntimeInfo(ctx)
 	decision := i.cardActionAccessDecision(input)
 	if !decision.OK {
+		i.recordInfo(ctx, "callback.denied", map[string]any{
+			"phase":     "managed_card_action",
+			"messageId": input.MessageID,
+			"reason":    string(decision.Reason),
+		})
 		return CardActionDispatchResult{
 			Outcome:      CardDispatchRejected,
 			RejectReason: string(decision.Reason),
@@ -597,6 +606,13 @@ func (i *managedLarkIntake) dispatchCardActionNow(ctx context.Context, input Car
 		CarrierThreads: managedCarrierThreadResolver{transport: i.transport},
 	})
 	if err != nil {
+		if errors.Is(err, ErrCardCallbackDenied) || errors.Is(err, ErrCardCallbackAuthMissing) {
+			i.recordInfo(ctx, "callback.denied", map[string]any{
+				"phase":     "managed_card_action",
+				"messageId": input.MessageID,
+				"reason":    err.Error(),
+			})
+		}
 		return result, err
 	}
 	if result.Outcome == CardDispatchCommand {
@@ -672,6 +688,7 @@ func (i *managedLarkIntake) handleBatch(ctx context.Context, batch appintake.Bat
 	last := messages[len(messages)-1]
 	decision := i.messageAccessDecision(first)
 	if !decision.OK {
+		i.recordInfo(ctx, "policy.denied", managedMessageDecisionFields(first, decision.Reason))
 		if first.ChatType != appintake.ChatTypeP2P && decision.Reason == AccessDeniedChat && first.MentionedBot {
 			i.sendNonAllowedGroupHint(ctx, first)
 		}
@@ -686,6 +703,7 @@ func (i *managedLarkIntake) handleBatch(ctx context.Context, batch appintake.Bat
 		i.recordError(ctx, err, map[string]any{"phase": "managed_media", "scope": batch.Scope.Key})
 		return i.sendMarkdown(ctx, first.ChatID, "暂不支持处理这条消息里的附件。请先发纯文本，或使用支持媒体下载的 Lark transport。", managedReplyOptions(last, batch.Scope))
 	}
+	i.recordAttachmentDecision(ctx, batch.Scope.Key, attachments)
 	quotes := i.resolveQuotedMessages(ctx, batch.Scope, messages)
 
 	run, err := i.client.Run(ctx, RunInput{
@@ -698,6 +716,11 @@ func (i *managedLarkIntake) handleBatch(ctx context.Context, batch appintake.Bat
 	})
 	if err != nil {
 		if IsRejected(err) {
+			i.recordInfo(ctx, "policy.denied", map[string]any{
+				"phase":  "managed_run",
+				"scope":  batch.Scope.Key,
+				"reason": err.Error(),
+			})
 			return i.sendMarkdown(ctx, first.ChatID, rejectedUserVisible(err), managedReplyOptions(last, batch.Scope))
 		}
 		i.recordError(ctx, err, map[string]any{"phase": "managed_run", "scope": batch.Scope.Key})
@@ -911,6 +934,34 @@ func (i *managedLarkIntake) resolveAttachments(ctx context.Context, messages []a
 		return nil, errors.New("media downloader is required")
 	}
 	return i.media.Resolve(ctx, requests, appmedia.ResolveOptionsFromProfile(i.client.profile.Attachments))
+}
+
+func (i *managedLarkIntake) recordAttachmentDecision(ctx context.Context, scope string, attachments []appmedia.NormalizedAttachment) {
+	if len(attachments) == 0 {
+		return
+	}
+	accepted := 0
+	rejected := 0
+	reasons := map[string]int{}
+	for _, attachment := range attachments {
+		switch attachment.Decision {
+		case appmedia.AttachmentAccepted:
+			accepted++
+		case appmedia.AttachmentRejected:
+			rejected++
+			if attachment.RejectionReason != "" {
+				reasons[attachment.RejectionReason]++
+			}
+		}
+	}
+	i.recordInfo(ctx, "attachment.decision", map[string]any{
+		"phase":    "managed_media",
+		"scope":    scope,
+		"total":    len(attachments),
+		"accepted": accepted,
+		"rejected": rejected,
+		"reasons":  reasons,
+	})
 }
 
 func (i *managedLarkIntake) renderOptions(metadata RunMetadata, first appintake.MessageInput) appcardrender.RenderOptions {

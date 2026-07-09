@@ -10,6 +10,11 @@ Go SDK for connecting Feishu/Lark PersonalAgent bots to local coding agents such
 - `cmd/lark-channel-bridge`: Go CLI entrypoint for profile/service workflows and first-run setup helpers.
 - `examples/codex-feishu`: minimal Go host that connects a Feishu/Lark app to local Codex.
 
+Ordinary embedders should prefer the stable profile/service facade:
+`BootstrapProfileConfig`, `NewProfileBridge`, `StartProfileService`, and
+`NewProfileServiceController`. Lower-level command, card, config, runtime,
+fake transport, and lark-cli helpers are advanced/experimental before v1.
+
 ## Lineage
 
 This SDK is extracted from the JavaScript-first

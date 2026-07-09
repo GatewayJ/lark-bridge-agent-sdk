@@ -139,6 +139,7 @@ func (a *Adapter) Run(ctx context.Context, opts agentport.AgentRunOptions) (agen
 	cmd := exec.Command(a.binary, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = mergeEnv(os.Environ(), a.envSnapshot())
+	prepareProcessCommand(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -349,11 +350,7 @@ func (r *processRun) stream(stdout io.Reader) {
 		return
 	}
 	if exitCode != 0 {
-		detail := r.stderrDetail()
-		if detail != "" {
-			detail = ": " + detail
-		}
-		r.emit([]agentport.AgentEvent{terminalError(fmt.Sprintf("claude exited with code %d%s", exitCode, detail))})
+		r.emit([]agentport.AgentEvent{terminalExitError("claude", exitCode, r.stderrDetail())})
 		return
 	}
 	if runtimeErr := r.getRuntimeError(); runtimeErr != nil {
@@ -450,6 +447,14 @@ func terminalError(message string) agentport.AgentEvent {
 		Message:           stringPtr(message),
 		TerminationReason: agentport.TerminationFailed,
 	}
+}
+
+func terminalExitError(name string, exitCode int, stderr string) agentport.AgentEvent {
+	message := fmt.Sprintf("%s exited with code %d", name, exitCode)
+	if strings.TrimSpace(stderr) != "" {
+		message += "; stderr omitted from chat output"
+	}
+	return terminalError(message)
 }
 
 func mergeEnv(base []string, overrides map[string]string) []string {

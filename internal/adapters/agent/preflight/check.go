@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultVersionTimeout = 5 * time.Second
+	defaultVersionTimeout = 15 * time.Second
 	excerptMax            = 500
 )
 

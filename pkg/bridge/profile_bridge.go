@@ -11,6 +11,7 @@ import (
 
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/configstore"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/larkcli"
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/processcontrol"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/secretstore"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/apppaths"
 )
@@ -193,7 +194,10 @@ func NewProfileBridge(ctx context.Context, options ProfileBridgeOptions) (*Bridg
 		return nil, ProfileBridgeInfo{}, err
 	}
 
-	logger, telemetry := profileBridgeObservability(ctx, options, paths, appConfig)
+	logger, telemetry, err := profileBridgeObservability(ctx, options, paths, appConfig)
+	if err != nil {
+		return nil, ProfileBridgeInfo{}, err
+	}
 	var instance *Bridge
 	commandOptions, err := profileBridgeCommandOptions(runtimeConfig, paths, info.ConfigPath, projectionEnv, options, func(ctx context.Context) error {
 		if instance == nil {
@@ -363,7 +367,7 @@ func profileBridgeAvailabilityError(availability AgentAvailability) error {
 	return fmt.Errorf("agent preflight failed (%s): %s", availability.Diagnostic.Code, availability.Error)
 }
 
-func profileBridgeObservability(ctx context.Context, options ProfileBridgeOptions, paths apppaths.Paths, appConfig larkcli.AppConfig) (Logger, TelemetryAdapter) {
+func profileBridgeObservability(ctx context.Context, options ProfileBridgeOptions, paths apppaths.Paths, appConfig larkcli.AppConfig) (Logger, TelemetryAdapter, error) {
 	telemetry := options.Telemetry
 	if telemetry == nil && options.LoadTelemetryFromEnv && !options.DisableDefaultTelemetry {
 		hostname, _ := os.Hostname()
@@ -379,6 +383,8 @@ func profileBridgeObservability(ctx context.Context, options ProfileBridgeOption
 		}, stderr)
 		if err == nil {
 			telemetry = loaded
+		} else {
+			return nil, nil, fmt.Errorf("load telemetry from env: %w", err)
 		}
 	}
 	logger := options.Logger
@@ -392,7 +398,7 @@ func profileBridgeObservability(ctx context.Context, options ProfileBridgeOption
 		_, _ = jsonl.GC()
 		logger = jsonl
 	}
-	return logger, telemetry
+	return logger, telemetry, nil
 }
 
 func profileBridgeCommandOptions(cfg configstore.RuntimeConfig, paths apppaths.Paths, configPath string, larkEnv LarkCliEnvContext, options ProfileBridgeOptions, restart func(context.Context) error) (CommandOptions, error) {
@@ -521,18 +527,11 @@ func (h profileBridgeProcessHooks) ExitSelf(context.Context) error {
 }
 
 func (h profileBridgeProcessHooks) Terminate(ctx context.Context, entry CommandProcessEntry) (bool, error) {
-	_ = ctx
 	if entry.PID == 0 {
 		return false, nil
 	}
-	process, err := os.FindProcess(entry.PID)
-	if err != nil {
-		return false, err
-	}
-	if err := process.Signal(os.Interrupt); err != nil {
-		return false, err
-	}
-	return false, nil
+	_, stillAlive, err := processcontrol.Stop(ctx, entry.PID, 0)
+	return stillAlive, err
 }
 
 func (h profileBridgeProcessHooks) status() (Status, bool) {

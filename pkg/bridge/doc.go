@@ -8,9 +8,11 @@
 //
 // The package also exposes compatibility and advanced helpers that preserve
 // the JavaScript package exports while keeping internal package types behind
-// public Go wrappers. Those helpers are useful for custom hosts, migrations,
-// tests, and operational tooling, but they are not the first-choice embedding
-// entry points for ordinary SDK consumers.
+// public Go wrappers. Until the module reaches v1, those lower-level command,
+// card, config, runtime, fake transport, and lark-cli helpers should be treated
+// as advanced/experimental API: useful for custom hosts, migrations, tests, and
+// operational tooling, but not the first-choice embedding entry points for
+// ordinary SDK consumers.
 //
 // Codex and Claude execution, prompt injection, run policy, session/thread
 // resume, slash commands, managed Lark IM intake, config and secret stores,

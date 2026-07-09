@@ -223,6 +223,51 @@ func TestStopInterruptsRunAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestInterruptRejectsSameScopeUntilStopReturns(t *testing.T) {
+	run1 := newFakeRun("run-1")
+	run1.stopStarted = make(chan struct{})
+	run1.releaseStop = make(chan struct{})
+	run2 := newFakeRun("run-2")
+	close(run2.exited)
+	agent := &fakeAgent{runs: []*fakeRun{run1, run2}}
+	executor := New(testOptions(agent, NewProcessPool(func() int { return 2 }), NewActiveRuns()))
+
+	if _, err := executor.Submit(context.Background(), testInput("scope-1")); err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	interruptDone := make(chan bool, 1)
+	go func() {
+		interruptDone <- executor.Interrupt(context.Background(), "scope-1")
+	}()
+	select {
+	case <-run1.stopStarted:
+	case <-time.After(time.Second):
+		t.Fatalf("interrupt did not enter Stop")
+	}
+
+	_, err := executor.Submit(context.Background(), testInput("scope-1"))
+	var rejected *RunRejected
+	if !errors.As(err, &rejected) || rejected.Code != RunRejectedAlreadyActive {
+		t.Fatalf("expected same scope to stay active while Stop blocks, got %#v", err)
+	}
+
+	close(run1.releaseStop)
+	select {
+	case ok := <-interruptDone:
+		if !ok {
+			t.Fatalf("Interrupt returned false")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("interrupt did not finish after Stop was released")
+	}
+	if active := executor.activeRuns.Get("scope-1"); active != nil {
+		t.Fatalf("scope remained active after Stop returned")
+	}
+	if _, err := executor.Submit(context.Background(), testInput("scope-1")); err != nil {
+		t.Fatalf("Submit after Stop returned error: %v", err)
+	}
+}
+
 func TestFanoutDrainsWithoutSubscribers(t *testing.T) {
 	run := newFakeRun("run-1")
 	close(run.exited)
@@ -447,11 +492,14 @@ func (a *fakeAgent) nextRunID() string {
 }
 
 type fakeRun struct {
-	runID     string
-	events    chan agentport.AgentEvent
-	exited    chan struct{}
-	mu        sync.Mutex
-	stopCalls int
+	runID       string
+	events      chan agentport.AgentEvent
+	exited      chan struct{}
+	stopStarted chan struct{}
+	releaseStop chan struct{}
+	stopOnce    sync.Once
+	mu          sync.Mutex
+	stopCalls   int
 }
 
 type logEntry struct {
@@ -511,6 +559,12 @@ func (r *fakeRun) Stop(context.Context) error {
 	r.mu.Lock()
 	r.stopCalls++
 	r.mu.Unlock()
+	if r.stopStarted != nil {
+		r.stopOnce.Do(func() { close(r.stopStarted) })
+	}
+	if r.releaseStop != nil {
+		<-r.releaseStop
+	}
 	select {
 	case <-r.exited:
 	default:

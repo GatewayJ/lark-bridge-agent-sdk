@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/larkcli"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/apppaths"
@@ -128,6 +131,33 @@ func TestNewProfileBridgeRequiresSecretsGetterCommandForBridgeExecSecret(t *test
 	}
 }
 
+func TestProfileBridgeProcessHooksTerminateWaitsForExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell signal test uses POSIX sh")
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep process: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	stillAlive, err := (profileBridgeProcessHooks{}).Terminate(context.Background(), CommandProcessEntry{PID: cmd.Process.Pid})
+	if err != nil {
+		t.Fatalf("Terminate returned error: %v", err)
+	}
+	if stillAlive {
+		t.Fatalf("Terminate returned stillAlive=true")
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatalf("process was not reaped after Terminate")
+	}
+}
+
 func TestProfileBridgeTelemetryFromEnvIsExplicitOptIn(t *testing.T) {
 	root := t.TempDir()
 	paths, err := apppaths.Resolve(apppaths.Options{RootDir: root, Profile: "codex"})
@@ -141,11 +171,37 @@ func TestProfileBridgeTelemetryFromEnvIsExplicitOptIn(t *testing.T) {
 		Tenant: larkcli.TenantFeishu,
 	}}}
 
-	_, telemetry := profileBridgeObservability(context.Background(), ProfileBridgeOptions{
+	_, telemetry, err := profileBridgeObservability(context.Background(), ProfileBridgeOptions{
 		DisableDefaultLogger: true,
 	}, paths, appConfig)
+	if err != nil {
+		t.Fatalf("profileBridgeObservability returned error: %v", err)
+	}
 	if telemetry != nil {
 		t.Fatalf("profileBridgeObservability loaded telemetry from env by default")
+	}
+}
+
+func TestProfileBridgeTelemetryFromEnvFailureReturnsError(t *testing.T) {
+	root := t.TempDir()
+	paths, err := apppaths.Resolve(apppaths.Options{RootDir: root, Profile: "codex"})
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	t.Setenv("LARK_CHANNEL_TELEMETRY_MODULE", filepath.Join(root, "missing-telemetry.js"))
+	t.Setenv("LARK_CHANNEL_NODE", filepath.Join(root, "missing-node"))
+	appConfig := larkcli.AppConfig{Accounts: larkcli.AccountsConfig{App: larkcli.AppCredentials{
+		ID:     "cli_profile_bridge",
+		Secret: "profile-secret",
+		Tenant: larkcli.TenantFeishu,
+	}}}
+
+	_, _, err = profileBridgeObservability(context.Background(), ProfileBridgeOptions{
+		LoadTelemetryFromEnv: true,
+		DisableDefaultLogger: true,
+	}, paths, appConfig)
+	if err == nil || !strings.Contains(err.Error(), "load telemetry from env") {
+		t.Fatalf("profileBridgeObservability error = %v, want telemetry load error", err)
 	}
 }
 
@@ -162,9 +218,12 @@ func TestProfileBridgeLogDirOverridesDefaultJSONLDir(t *testing.T) {
 	}}}
 	logDir := filepath.Join(root, "custom-logs")
 
-	logger, _ := profileBridgeObservability(context.Background(), ProfileBridgeOptions{
+	logger, _, err := profileBridgeObservability(context.Background(), ProfileBridgeOptions{
 		LogDir: logDir,
 	}, paths, appConfig)
+	if err != nil {
+		t.Fatalf("profileBridgeObservability returned error: %v", err)
+	}
 	if logger == nil {
 		t.Fatalf("logger is nil")
 	}

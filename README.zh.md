@@ -10,6 +10,11 @@
 - `cmd/lark-channel-bridge`：Go CLI 入口，用于 profile / service 工作流和首次配置辅助流程。
 - `examples/codex-feishu`：最小 Go 程序示例，把飞书 / Lark app 接到本地 Codex。
 
+普通接入方建议优先使用稳定的 profile / service facade：
+`BootstrapProfileConfig`、`NewProfileBridge`、`StartProfileService` 和
+`NewProfileServiceController`。更底层的命令、卡片、配置、runtime、fake
+transport 与 lark-cli helper 在 v1 前属于高级 / 实验 API。
+
 ## 来源与致谢
 
 这个 SDK 从 JavaScript 优先的

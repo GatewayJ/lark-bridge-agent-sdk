@@ -66,6 +66,8 @@ registry/lock helpers, config and secret-store wrappers, and fake transports.
 Those APIs exist to preserve bridge behavior, support migrations, and let
 advanced hosts replace individual subsystems. Prefer the stable entry
 points above unless the host genuinely needs to own that subsystem boundary.
+Treat these lower-level exports as advanced/experimental before v1; pin a
+version if you depend on them directly.
 
 For API-level details, see [pkg/bridge operational facade](pkg/bridge.md).
 
@@ -219,7 +221,8 @@ Important options:
   that already ran equivalent checks.
 - `LoadTelemetryFromEnv` explicitly opts into loading the legacy JavaScript
   telemetry module named by `LARK_CHANNEL_TELEMETRY_MODULE`. It is disabled by
-  default so constructing a profile bridge does not spawn Node.js.
+  default so constructing a profile bridge does not spawn Node.js. When enabled,
+  helper startup failures are returned from `NewProfileBridge`.
 - `LogDir` overrides the default JSONL log directory. If empty, logs are written
   under `<Home>/profiles/<Profile>/logs`.
 - `InitialOwnerOpenID` seeds the app creator/owner access fallback during

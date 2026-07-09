@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -77,6 +78,34 @@ func TestJSONLLoggerGCRemovesOldBridgeLogs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "other.log")); err != nil {
 		t.Fatalf("non-bridge log missing: %v", err)
+	}
+}
+
+func TestJSONLLoggerReportsFileWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	blockedDir := filepath.Join(root, "not-a-dir")
+	if err := os.WriteFile(blockedDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	var stderr bytes.Buffer
+	adapter := &recordingTelemetry{}
+	logger := NewJSONLLogger(JSONLLoggerOptions{
+		Dir:       blockedDir,
+		Stderr:    &stderr,
+		Telemetry: adapter,
+	})
+
+	logger.Info("bridge.started", nil)
+	logger.Info("bridge.started", nil)
+
+	if got := strings.Count(stderr.String(), "logger.write_failed"); got != 1 {
+		t.Fatalf("stderr write failure count = %d, output %q", got, stderr.String())
+	}
+	if len(adapter.events) != 3 {
+		t.Fatalf("telemetry events = %#v, want write_failed plus two bridge events", adapter.events)
+	}
+	if adapter.events[0].Name != "logger.write_failed" {
+		t.Fatalf("first telemetry event = %#v, want logger.write_failed", adapter.events[0])
 	}
 }
 

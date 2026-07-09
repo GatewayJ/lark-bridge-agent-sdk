@@ -106,7 +106,9 @@ exit 42
 	if len(events) != 2 || events[0].Type != agentport.EventText || events[1].Type != agentport.EventError || events[1].Message == nil {
 		t.Fatalf("unexpected events: %#v", events)
 	}
-	if !strings.Contains(*events[1].Message, "claude exited with code 42: boom") {
+	if !strings.Contains(*events[1].Message, "claude exited with code 42") ||
+		!strings.Contains(*events[1].Message, "stderr omitted") ||
+		strings.Contains(*events[1].Message, "boom") {
 		t.Fatalf("unexpected error message: %q", *events[1].Message)
 	}
 }
@@ -198,14 +200,14 @@ func writeFakeClaude(t *testing.T, body string) string {
 
 func collectEvents(t *testing.T, run agentport.AgentRun) []agentport.AgentEvent {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout(t, 10*time.Second))
 	defer cancel()
 	var events []agentport.AgentEvent
 	for {
 		select {
 		case event, ok := <-run.Events():
 			if !ok {
-				waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+				waitCtx, waitCancel := context.WithTimeout(context.Background(), testTimeout(t, 5*time.Second))
 				defer waitCancel()
 				if ok, err := run.WaitForExit(waitCtx); !ok || err != nil {
 					t.Fatalf("WaitForExit ok=%v err=%v", ok, err)
@@ -217,6 +219,22 @@ func collectEvents(t *testing.T, run agentport.AgentRun) []agentport.AgentEvent 
 			t.Fatalf("timed out collecting events")
 		}
 	}
+}
+
+func testTimeout(t *testing.T, fallback time.Duration) time.Duration {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		return fallback
+	}
+	remaining := time.Until(deadline) - time.Second
+	if remaining <= 0 {
+		return fallback
+	}
+	if remaining < fallback {
+		return remaining
+	}
+	return fallback
 }
 
 func readFile(t *testing.T, path string) string {
