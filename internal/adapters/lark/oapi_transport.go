@@ -43,28 +43,16 @@ const (
 )
 
 var (
-	ErrOAPIAppCredentials = errors.New("lark oapi app id and secret are required")
-	ErrOAPIChannel        = errors.New("lark oapi channel is required")
-	ErrOAPIClient         = errors.New("lark oapi client is required")
-	ErrOAPIStartTimeout   = errors.New("lark oapi channel start timed out")
-	ErrOAPIAlreadyStarted = errors.New("lark oapi transport already started; create a new transport to reconnect")
-	ErrOAPICardIDMissing  = errors.New("lark oapi card id is missing")
-	ErrOAPIMessageMissing = errors.New("lark oapi message is missing")
-	ErrOAPIReplyThread    = errors.New("lark oapi replyInThread requires replyTo")
-	ErrOAPIThreadIDSend   = errors.New("lark oapi direct threadID send is unsupported; reply to a carrier message instead")
-	ErrOAPIInboundAckMode = errors.New("lark oapi inbound ack mode is invalid")
-	ErrOAPIIntakeMissing  = errors.New("lark oapi durable intake handler is unavailable")
-)
-
-type InboundAckMode uint8
-
-const (
-	// InboundAckSDKDefault preserves the larksuite channel facade's default
-	// asynchronous message dispatch behavior.
-	InboundAckSDKDefault InboundAckMode = iota
-	// InboundAckAfterIntake acknowledges accepted message and comment events only
-	// after the registered transport handler returns nil.
-	InboundAckAfterIntake
+	ErrOAPIAppCredentials  = errors.New("lark oapi app id and secret are required")
+	ErrOAPIChannel         = errors.New("lark oapi channel is required")
+	ErrOAPIClient          = errors.New("lark oapi client is required")
+	ErrOAPIEventDispatcher = errors.New("lark oapi websocket event dispatcher is required")
+	ErrOAPIStartTimeout    = errors.New("lark oapi channel start timed out")
+	ErrOAPIAlreadyStarted  = errors.New("lark oapi transport already started; create a new transport to reconnect")
+	ErrOAPICardIDMissing   = errors.New("lark oapi card id is missing")
+	ErrOAPIMessageMissing  = errors.New("lark oapi message is missing")
+	ErrOAPIReplyThread     = errors.New("lark oapi replyInThread requires replyTo")
+	ErrOAPIThreadIDSend    = errors.New("lark oapi direct threadID send is unsupported; reply to a carrier message instead")
 )
 
 type OAPIError struct {
@@ -106,28 +94,28 @@ type OAPITransportOptions struct {
 
 	DisableWebSocket   bool
 	EnableSDKChatQueue bool
-	InboundAckMode     InboundAckMode
+	LanguagePriority   []string
 
-	channel oapiChannel
-	now     func() time.Time
+	channel       oapiChannel
+	ingressSocket ingressSocket
+	now           func() time.Time
 }
 
 type OAPITransport struct {
 	mu sync.Mutex
 
-	client         *larksdk.Client
-	wsClient       *larkws.Client
-	channel        oapiChannel
-	requestTTL     time.Duration
-	startTimeout   time.Duration
-	startCancel    context.CancelFunc
-	ready          chan struct{}
-	handler        TransportHandler
-	connected      bool
-	registered     bool
-	started        bool
-	now            func() time.Time
-	inboundAckMode InboundAckMode
+	client       *larksdk.Client
+	wsClient     *larkws.Client
+	channel      oapiChannel
+	requestTTL   time.Duration
+	startTimeout time.Duration
+	startCancel  context.CancelFunc
+	ready        chan struct{}
+	handler      TransportHandler
+	connected    bool
+	registered   bool
+	started      bool
+	now          func() time.Time
 
 	source        string
 	regDomain     string
@@ -151,9 +139,6 @@ type oapiChannel interface {
 }
 
 func NewOAPITransport(options OAPITransportOptions) (*OAPITransport, error) {
-	if options.InboundAckMode > InboundAckAfterIntake {
-		return nil, ErrOAPIInboundAckMode
-	}
 	client := options.Client
 	wsClient := options.WSClient
 	channel := options.channel
@@ -170,11 +155,11 @@ func NewOAPITransport(options OAPITransportOptions) (*OAPITransport, error) {
 			}
 			wsClient = newOAPIWSClient(options)
 		}
+		if !options.DisableWebSocket && wsClient != nil && wsClient.EventHandler() == nil {
+			return nil, ErrOAPIEventDispatcher
+		}
 		channelConfig := defaultOAPIChannelConfig(options)
 		channel = larkchannel.NewChannel(client, wsClient, oapiChannelOptions(channelConfig)...)
-		if options.InboundAckMode == InboundAckAfterIntake && wsClient != nil {
-			channel = newOAPIAckAfterIntakeChannel(channel, wsClient, channelConfig)
-		}
 	}
 	if channel == nil {
 		return nil, ErrOAPIChannel
@@ -192,16 +177,15 @@ func NewOAPITransport(options OAPITransportOptions) (*OAPITransport, error) {
 		now = time.Now
 	}
 	return &OAPITransport{
-		client:         client,
-		wsClient:       wsClient,
-		channel:        channel,
-		requestTTL:     requestTTL,
-		startTimeout:   startTimeout,
-		now:            now,
-		inboundAckMode: options.InboundAckMode,
-		source:         options.Source,
-		regDomain:      options.RegistrationDomain,
-		regLarkDomain:  options.RegistrationLarkDomain,
+		client:        client,
+		wsClient:      wsClient,
+		channel:       channel,
+		requestTTL:    requestTTL,
+		startTimeout:  startTimeout,
+		now:           now,
+		source:        options.Source,
+		regDomain:     options.RegistrationDomain,
+		regLarkDomain: options.RegistrationLarkDomain,
 	}, nil
 }
 
@@ -1338,13 +1322,8 @@ func (t *OAPITransport) emit(ctx context.Context, event IncomingEvent) error {
 	t.mu.Lock()
 	handler := t.handler
 	connected := t.connected
-	inboundAckMode := t.inboundAckMode
 	t.mu.Unlock()
 	if !connected || handler == nil {
-		if inboundAckMode == InboundAckAfterIntake &&
-			(event.Kind == appintake.EventMessage || event.Kind == appintake.EventComment) {
-			return ErrOAPIIntakeMissing
-		}
 		return nil
 	}
 	return handler.HandleLarkTransportEvent(ctx, event)

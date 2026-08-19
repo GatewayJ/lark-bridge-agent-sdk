@@ -14,8 +14,10 @@ import (
 	appintake "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/intake"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/larkcli"
 	appmedia "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/media"
+	lark "github.com/larksuite/oapi-sdk-go/v3"
 	channeltypes "github.com/larksuite/oapi-sdk-go/v3/channel/types"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
 var (
@@ -29,32 +31,19 @@ var (
 	ErrLarkOAPIAppCredentials    = internallark.ErrOAPIAppCredentials
 	ErrLarkOAPIChannel           = internallark.ErrOAPIChannel
 	ErrLarkOAPIClient            = internallark.ErrOAPIClient
+	ErrLarkOAPIEventDispatcher   = internallark.ErrOAPIEventDispatcher
 	ErrLarkOAPIStartTimeout      = internallark.ErrOAPIStartTimeout
 	ErrLarkOAPIAlreadyStarted    = internallark.ErrOAPIAlreadyStarted
 	ErrLarkOAPICardIDMissing     = internallark.ErrOAPICardIDMissing
 	ErrLarkOAPIMessageMissing    = internallark.ErrOAPIMessageMissing
 	ErrLarkOAPIReplyThread       = internallark.ErrOAPIReplyThread
 	ErrLarkOAPIThreadIDSend      = internallark.ErrOAPIThreadIDSend
-	ErrLarkOAPIInboundAckMode    = internallark.ErrOAPIInboundAckMode
-	ErrLarkOAPIIntakeMissing     = internallark.ErrOAPIIntakeMissing
 )
 
 const (
 	DefaultLarkOAPIRequestTimeout = internallark.DefaultOAPIRequestTimeout
 	DefaultLarkOAPIStartTimeout   = internallark.DefaultOAPIStartTimeout
 	DefaultLarkOAPIStreamThrottle = internallark.DefaultOAPIStreamThrottle
-)
-
-type InboundAckMode uint8
-
-const (
-	// InboundAckSDKDefault preserves the larksuite channel facade's default
-	// asynchronous message dispatch behavior.
-	InboundAckSDKDefault InboundAckMode = iota
-	// InboundAckAfterIntake acknowledges accepted message and comment events
-	// only after the registered intake handler returns nil. The intake handler
-	// should durably persist or claim the event before returning.
-	InboundAckAfterIntake
 )
 
 type LarkIncomingEvent struct {
@@ -311,6 +300,11 @@ type OAPILarkTransportOptions struct {
 	Tenant    string
 	Domain    string
 	Source    string
+	Client    *lark.Client
+	// WSClient must be unstarted and configured with an event dispatcher.
+	// Passing it transfers exclusive connection lifecycle ownership to the
+	// transport, which replaces lifecycle callbacks and closes it on Disconnect.
+	WSClient *larkws.Client
 
 	RequestTimeout         time.Duration
 	StartTimeout           time.Duration
@@ -326,10 +320,9 @@ type OAPILarkTransportOptions struct {
 
 	DisableWebSocket   bool
 	EnableSDKChatQueue bool
-	// InboundAckMode controls when accepted message and comment events are
-	// acknowledged. InboundAckAfterIntake bypasses SDK message batching and
-	// requires the intake implementation to be idempotent under redelivery.
-	InboundAckMode InboundAckMode
+	// LanguagePriority controls deterministic locale selection for rich-post
+	// ingress content. Locale spellings such as zh_cn and zh-CN are equivalent.
+	LanguagePriority []string
 }
 
 const defaultOAPILarkTransportSource = "lark-channel-bridge"
@@ -365,16 +358,26 @@ func NewLarkAdapter(options LarkAdapterOptions) (*LarkAdapter, error) {
 }
 
 func NewOAPILarkTransport(options OAPILarkTransportOptions) (*OAPILarkTransport, error) {
+	transport, err := internallark.NewOAPITransport(toInternalOAPITransportOptions(options))
+	if err != nil {
+		return nil, err
+	}
+	return &OAPILarkTransport{inner: transport}, nil
+}
+
+func toInternalOAPITransportOptions(options OAPILarkTransportOptions) internallark.OAPITransportOptions {
 	source := options.Source
 	if source == "" {
 		source = defaultOAPILarkTransportSource
 	}
-	transport, err := internallark.NewOAPITransport(internallark.OAPITransportOptions{
+	return internallark.OAPITransportOptions{
 		AppID:                   options.AppID,
 		AppSecret:               options.AppSecret,
 		Tenant:                  options.Tenant,
 		Domain:                  options.Domain,
 		Source:                  source,
+		Client:                  options.Client,
+		WSClient:                options.WSClient,
 		RequestTimeout:          options.RequestTimeout,
 		StartTimeout:            options.StartTimeout,
 		Headers:                 options.Headers,
@@ -387,12 +390,8 @@ func NewOAPILarkTransport(options OAPILarkTransportOptions) (*OAPILarkTransport,
 		ClientAssertionProvider: options.ClientAssertionProvider,
 		DisableWebSocket:        options.DisableWebSocket,
 		EnableSDKChatQueue:      options.EnableSDKChatQueue,
-		InboundAckMode:          internallark.InboundAckMode(options.InboundAckMode),
-	})
-	if err != nil {
-		return nil, err
+		LanguagePriority:        options.LanguagePriority,
 	}
-	return &OAPILarkTransport{inner: transport}, nil
 }
 
 func NewLarkCLIProjectionHook(options LarkCLIProjectionHookOptions) LarkProfileProjectionHook {

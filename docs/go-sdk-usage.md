@@ -301,6 +301,44 @@ comments, COT messages, card updates, callbacks, and media attachments.
 Production callers normally use `NewOAPILarkTransport`; tests can use
 `NewFakeLarkTransport`.
 
+### Durable ingress
+
+Hosts that own durable intake should use `NewOAPIIngressTransport` instead of
+the managed `LarkTransport` receive path. The ingress transport registers
+directly on the Feishu/Lark WebSocket event dispatcher; it does not run the
+high-level `channel.Channel` deduplication, batching, mention policy, stale
+filter, or processing lock.
+
+```go
+ingress, err := bridge.NewOAPIIngressTransport(bridge.OAPILarkTransportOptions{
+    AppID:            appID,
+    AppSecret:        appSecret,
+    LanguagePriority: []string{"zh_cn", "zh-CN", "en_us"},
+})
+if err != nil {
+    return err
+}
+err = ingress.Connect(ctx, func(ctx context.Context, envelope bridge.Envelope) error {
+    // Return nil only after a durable claim or inbound write succeeds.
+    // Agent execution happens asynchronously after this boundary.
+    return inbox.Persist(ctx, envelope)
+})
+```
+
+The handler runs synchronously in the WebSocket callback. Its error is returned
+unchanged to the Lark SDK, causing the callback response to fail so Feishu can
+redeliver the event. Durable consumers therefore remain responsible for
+idempotency. `MessageContent` preserves the raw JSON and exposes structured
+rich-post locales, plus the deterministically selected `PlainText` and
+`Resources`. Locale aliases using underscores or hyphens compare equivalently;
+if no preference matches, the lexicographically first locale is selected.
+
+`OAPILarkTransportOptions.Client` and `WSClient` can be used to inject official
+SDK clients. An injected `WSClient` must be unstarted, have an event dispatcher,
+and be dedicated to the transport. Injection transfers exclusive connection
+lifecycle ownership: the transport replaces lifecycle callbacks and closes the
+client from `Disconnect`.
+
 If you call `Client.Run` directly, compute `RunInput.Access` with
 `client.EvaluateAccess(...)`; handcrafted allow decisions are rejected so
 untrusted callers cannot bypass the profile allowlist. `Client.HandleCommand`

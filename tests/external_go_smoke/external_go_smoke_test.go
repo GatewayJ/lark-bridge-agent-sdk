@@ -42,6 +42,20 @@ import (
 )
 
 func TestBridgePublicAPICompiles(t *testing.T) {
+	var _ bridge.IngressTransport = (*bridge.OAPIIngressTransport)(nil)
+	content := bridge.MessageContent{
+		Type:      "post",
+		PlainText: "hello",
+		Post:      &bridge.RichPost{Locales: map[string]bridge.RichDocument{"en_us": {Title: "Hello"}}},
+		Resources: []bridge.Resource{{Type: "image", FileKey: "img_smoke"}},
+	}
+	if content.Post.Locales["en_us"].Title != "Hello" {
+		t.Fatalf("structured ingress content did not compile")
+	}
+	handler := bridge.IngressHandler(func(context.Context, bridge.Envelope) error { return nil })
+	if handler == nil {
+		t.Fatal("IngressHandler is nil")
+	}
 	surface, err := bridge.NewOAPICommentSurface(nil)
 	if surface != nil || !errors.Is(err, bridge.ErrNilLarkTransport) {
 		t.Fatalf("NewOAPICommentSurface(nil) surface=%#v err=%v", surface, err)
@@ -170,7 +184,6 @@ func TestBridgePublicAPICompiles(t *testing.T) {
 		AppID:            "cli_smoke",
 		AppSecret:        "secret",
 		DisableWebSocket: true,
-		InboundAckMode:   bridge.InboundAckAfterIntake,
 	})
 	if err != nil || transport == nil {
 		t.Fatalf("NewOAPILarkTransport transport=%#v err=%v", transport, err)

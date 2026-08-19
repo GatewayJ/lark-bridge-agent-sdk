@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	lark "github.com/larksuite/oapi-sdk-go/v3"
+	larkdispatcher "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
 func TestLarkFacadeStartsFakeTransportAndProjectsLarkCLI(t *testing.T) {
@@ -106,12 +110,16 @@ func TestOAPILarkTransportZeroValueReturnsNilTransportErrors(t *testing.T) {
 	}
 }
 
-func TestOAPILarkTransportAcceptsAfterIntakeAckMode(t *testing.T) {
+func TestOAPILarkTransportAcceptsInjectedClientsWithoutCredentials(t *testing.T) {
+	client := lark.NewClient("cli_injected", "secret")
+	wsClient := larkws.NewClient(
+		"cli_injected",
+		"secret",
+		larkws.WithEventHandler(larkdispatcher.NewEventDispatcher("", "")),
+	)
 	transport, err := NewOAPILarkTransport(OAPILarkTransportOptions{
-		AppID:            "cli_test",
-		AppSecret:        "secret",
-		DisableWebSocket: true,
-		InboundAckMode:   InboundAckAfterIntake,
+		Client:   client,
+		WSClient: wsClient,
 	})
 	if err != nil {
 		t.Fatalf("NewOAPILarkTransport error = %v", err)
@@ -121,12 +129,15 @@ func TestOAPILarkTransportAcceptsAfterIntakeAckMode(t *testing.T) {
 	}
 }
 
-func TestOAPILarkTransportRejectsInvalidAckMode(t *testing.T) {
+func TestOAPILarkTransportRejectsInjectedWSClientWithoutDispatcher(t *testing.T) {
+	client := lark.NewClient("cli_injected", "secret")
+	wsClient := larkws.NewClient("cli_injected", "secret")
 	_, err := NewOAPILarkTransport(OAPILarkTransportOptions{
-		InboundAckMode: InboundAckMode(255),
+		Client:   client,
+		WSClient: wsClient,
 	})
-	if !errors.Is(err, ErrLarkOAPIInboundAckMode) {
-		t.Fatalf("NewOAPILarkTransport error = %v, want %v", err, ErrLarkOAPIInboundAckMode)
+	if !errors.Is(err, ErrLarkOAPIEventDispatcher) {
+		t.Fatalf("NewOAPILarkTransport error = %v, want %v", err, ErrLarkOAPIEventDispatcher)
 	}
 }
 

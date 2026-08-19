@@ -62,6 +62,34 @@ Supported embedding modes:
 - injected Lark channel: pass `LarkTransport` plus `AppID`; `Start` wraps it in `LarkAdapter` and `RuntimeCoordinator` for profile/app locks and registry status. If a `Client` is also provided and no custom `LarkIntake` is supplied, the SDK auto-wires a managed intake for IM messages, slash commands, and document comments when a `LarkComments` surface or OAPI transport is available;
 - custom runtime: pass `RuntimeAdapter` plus `AppID` when the host owns channel startup. `RuntimeAdapterFunc` is available for small host-side adapters.
 
+For a durable host-owned receive boundary, use the synchronous ingress port:
+
+```go
+type IngressHandler func(context.Context, Envelope) error
+
+type IngressTransport interface {
+    Connect(context.Context, IngressHandler) error
+    Disconnect(context.Context) error
+}
+
+ingress, err := NewOAPIIngressTransport(OAPILarkTransportOptions{
+    AppID:            appID,
+    AppSecret:        appSecret,
+    LanguagePriority: []string{"zh_cn", "zh-CN", "en_us"},
+})
+```
+
+An injected `WSClient` must be unstarted, configured with an event dispatcher,
+and dedicated to the transport. The transport takes exclusive ownership of its
+connection lifecycle, replaces lifecycle callbacks, and closes it on
+`Disconnect`.
+
+This path attaches directly to the official WebSocket event dispatcher and
+does not reuse the high-level `channel.Channel` receive pipeline. A nil handler
+result means only that the host completed its durable claim or inbound
+persistence. Handler errors are returned to the WebSocket callback so Feishu
+can retry; they are never converted into successful acknowledgements.
+
 Public lark-cli helpers use the canonical all-caps `CLI` spelling:
 
 ```go
