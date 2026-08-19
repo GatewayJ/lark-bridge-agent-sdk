@@ -43,6 +43,21 @@ import (
 
 func TestBridgePublicAPICompiles(t *testing.T) {
 	var _ bridge.IngressTransport = (*bridge.OAPIIngressTransport)(nil)
+	var _ bridge.IdentitySource = (*bridge.OAPIIngressTransport)(nil)
+	var ingressEvent bridge.IngressEvent = bridge.Envelope{Kind: bridge.IngressEventMessage}
+	if ingressEvent.Kind != bridge.IngressEventMessage {
+		t.Fatalf("IngressEvent kind = %q", ingressEvent.Kind)
+	}
+	_ = bridge.IngressEvent{
+		Kind:    bridge.IngressEventComment,
+		Comment: &bridge.IngressComment{CommentID: "comment_smoke"},
+	}
+	_ = bridge.IngressEvent{
+		Kind: bridge.IngressEventCardAction,
+		CardAction: &bridge.IngressCardAction{
+			Action: bridge.IngressCardActionPayload{Value: map[string]any{"command": "stop"}},
+		},
+	}
 	content := bridge.MessageContent{
 		Type:      "post",
 		PlainText: "hello",
@@ -52,7 +67,7 @@ func TestBridgePublicAPICompiles(t *testing.T) {
 	if content.Post.Locales["en_us"].Title != "Hello" {
 		t.Fatalf("structured ingress content did not compile")
 	}
-	handler := bridge.IngressHandler(func(context.Context, bridge.Envelope) error { return nil })
+	handler := bridge.IngressHandler(func(context.Context, bridge.IngressEvent) error { return nil })
 	if handler == nil {
 		t.Fatal("IngressHandler is nil")
 	}

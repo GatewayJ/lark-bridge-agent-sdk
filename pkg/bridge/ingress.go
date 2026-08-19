@@ -19,22 +19,50 @@ var (
 
 // IngressHandler must return only after the host has durably claimed or
 // persisted the event. A nil result acknowledges intake, not agent execution.
-type IngressHandler func(context.Context, Envelope) error
+type IngressHandler func(context.Context, IngressEvent) error
 
 type IngressTransport interface {
 	Connect(context.Context, IngressHandler) error
 	Disconnect(context.Context) error
 }
 
-type Envelope struct {
+type IdentitySource interface {
+	Identity(context.Context) (Identity, error)
+}
+
+type Identity struct {
+	AppID          string
+	OpenID         string
+	UserID         string
+	UnionID        string
+	Name           string
+	ActivateStatus int
+	Raw            json.RawMessage
+}
+
+type IngressEventKind string
+
+const (
+	IngressEventMessage    IngressEventKind = "message"
+	IngressEventComment    IngressEventKind = "comment"
+	IngressEventCardAction IngressEventKind = "card_action"
+)
+
+type IngressEvent struct {
+	Kind       IngressEventKind
 	EventID    string
 	EventType  string
 	AppID      string
 	TenantKey  string
 	CreateTime time.Time
 	Message    *Message
+	Comment    *IngressComment
+	CardAction *IngressCardAction
 	Raw        json.RawMessage
 }
+
+// Envelope is retained as an alias for message-only integrations.
+type Envelope = IngressEvent
 
 type Message struct {
 	MessageID  string
@@ -47,6 +75,47 @@ type Message struct {
 	Sender     Sender
 	Mentions   []Mention
 	Content    MessageContent
+}
+
+type IngressComment struct {
+	CommentID    string
+	ReplyID      string
+	FileToken    string
+	FileType     string
+	NoticeType   string
+	Operator     Sender
+	MentionedBot bool
+	CreateTime   time.Time
+}
+
+type IngressCardAction struct {
+	Token        string
+	Host         string
+	DeliveryType string
+	MessageID    string
+	ChatID       string
+	Operator     Sender
+	Action       IngressCardActionPayload
+	Context      IngressCardActionContext
+}
+
+type IngressCardActionPayload struct {
+	Value      map[string]any
+	Tag        string
+	Option     string
+	Timezone   string
+	Name       string
+	FormValue  map[string]any
+	InputValue string
+	Options    []string
+	Checked    bool
+}
+
+type IngressCardActionContext struct {
+	URL           string
+	PreviewToken  string
+	OpenMessageID string
+	OpenChatID    string
 }
 
 type Sender struct {
@@ -113,6 +182,7 @@ type OAPIIngressTransport struct {
 }
 
 var _ IngressTransport = (*OAPIIngressTransport)(nil)
+var _ IdentitySource = (*OAPIIngressTransport)(nil)
 
 func NewOAPIIngressTransport(options OAPILarkTransportOptions) (*OAPIIngressTransport, error) {
 	transport, err := internallark.NewOAPIIngressTransport(toInternalOAPITransportOptions(options))
@@ -129,8 +199,8 @@ func (t *OAPIIngressTransport) Connect(ctx context.Context, handler IngressHandl
 	if handler == nil {
 		return ErrIngressHandler
 	}
-	return t.inner.Connect(ctx, func(ctx context.Context, envelope internallark.IngressEnvelope) error {
-		return handler(ctx, fromInternalIngressEnvelope(envelope))
+	return t.inner.Connect(ctx, func(ctx context.Context, event internallark.IngressEvent) error {
+		return handler(ctx, fromInternalIngressEvent(event))
 	})
 }
 
@@ -141,8 +211,28 @@ func (t *OAPIIngressTransport) Disconnect(ctx context.Context) error {
 	return t.inner.Disconnect(ctx)
 }
 
-func fromInternalIngressEnvelope(in internallark.IngressEnvelope) Envelope {
-	out := Envelope{
+func (t *OAPIIngressTransport) Identity(ctx context.Context) (Identity, error) {
+	if t == nil || t.inner == nil {
+		return Identity{}, ErrIngressTransport
+	}
+	identity, err := t.inner.Identity(ctx)
+	if err != nil {
+		return Identity{}, fromInternalLarkError(err)
+	}
+	return Identity{
+		AppID:          identity.AppID,
+		OpenID:         identity.OpenID,
+		UserID:         identity.UserID,
+		UnionID:        identity.UnionID,
+		Name:           identity.Name,
+		ActivateStatus: identity.ActivateStatus,
+		Raw:            append(json.RawMessage(nil), identity.Raw...),
+	}, nil
+}
+
+func fromInternalIngressEvent(in internallark.IngressEvent) IngressEvent {
+	out := IngressEvent{
+		Kind:       IngressEventKind(in.Kind),
 		EventID:    in.EventID,
 		EventType:  in.EventType,
 		AppID:      in.AppID,
@@ -153,6 +243,55 @@ func fromInternalIngressEnvelope(in internallark.IngressEnvelope) Envelope {
 	if in.Message != nil {
 		message := fromInternalIngressMessage(*in.Message)
 		out.Message = &message
+	}
+	if in.Comment != nil {
+		out.Comment = &IngressComment{
+			CommentID:    in.Comment.CommentID,
+			ReplyID:      in.Comment.ReplyID,
+			FileToken:    in.Comment.FileToken,
+			FileType:     in.Comment.FileType,
+			NoticeType:   in.Comment.NoticeType,
+			Operator:     Sender(in.Comment.Operator),
+			MentionedBot: in.Comment.MentionedBot,
+			CreateTime:   in.Comment.CreateTime,
+		}
+	}
+	if in.CardAction != nil {
+		out.CardAction = &IngressCardAction{
+			Token:        in.CardAction.Token,
+			Host:         in.CardAction.Host,
+			DeliveryType: in.CardAction.DeliveryType,
+			MessageID:    in.CardAction.MessageID,
+			ChatID:       in.CardAction.ChatID,
+			Operator:     Sender(in.CardAction.Operator),
+			Action: IngressCardActionPayload{
+				Value:      cloneIngressAnyMap(in.CardAction.Action.Value),
+				Tag:        in.CardAction.Action.Tag,
+				Option:     in.CardAction.Action.Option,
+				Timezone:   in.CardAction.Action.Timezone,
+				Name:       in.CardAction.Action.Name,
+				FormValue:  cloneIngressAnyMap(in.CardAction.Action.FormValue),
+				InputValue: in.CardAction.Action.InputValue,
+				Options:    append([]string(nil), in.CardAction.Action.Options...),
+				Checked:    in.CardAction.Action.Checked,
+			},
+			Context: IngressCardActionContext(in.CardAction.Context),
+		}
+	}
+	return out
+}
+
+func fromInternalIngressEnvelope(in internallark.IngressEnvelope) Envelope {
+	return fromInternalIngressEvent(in)
+}
+
+func cloneIngressAnyMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
 	}
 	return out
 }

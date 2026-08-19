@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -13,7 +14,11 @@ import (
 	"sync"
 	"time"
 
+	larksdk "github.com/larksuite/oapi-sdk-go/v3"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
 	larkdispatcher "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	larkcallback "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
@@ -24,26 +29,54 @@ var (
 	ErrIngressHandlerUnavailable = errors.New("lark oapi ingress handler is unavailable")
 	ErrIngressAlreadyStarted     = errors.New("lark oapi ingress transport is already started")
 	ErrIngressDispatcher         = errors.New("lark oapi ingress event dispatcher is required")
-	ErrIngressHandlerRegistered  = errors.New("lark oapi ingress message handler is already registered")
+	ErrIngressHandlerRegistered  = errors.New("lark oapi ingress event handler is already registered")
 	ingressMarkdownImageKeyRE    = regexp.MustCompile(`!\[[^]]*\]\(([^)]+)\)`)
 )
 
-type IngressHandler func(context.Context, IngressEnvelope) error
+type IngressEventKind string
+
+const (
+	IngressEventMessage    IngressEventKind = "message"
+	IngressEventComment    IngressEventKind = "comment"
+	IngressEventCardAction IngressEventKind = "card_action"
+)
+
+type IngressHandler func(context.Context, IngressEvent) error
 
 type IngressTransport interface {
 	Connect(context.Context, IngressHandler) error
 	Disconnect(context.Context) error
 }
 
-type IngressEnvelope struct {
+type IdentitySource interface {
+	Identity(context.Context) (IngressIdentity, error)
+}
+
+type IngressIdentity struct {
+	AppID          string
+	OpenID         string
+	UserID         string
+	UnionID        string
+	Name           string
+	ActivateStatus int
+	Raw            json.RawMessage
+}
+
+type IngressEvent struct {
+	Kind       IngressEventKind
 	EventID    string
 	EventType  string
 	AppID      string
 	TenantKey  string
 	CreateTime time.Time
 	Message    *IngressMessage
+	Comment    *IngressComment
+	CardAction *IngressCardAction
 	Raw        json.RawMessage
 }
+
+// IngressEnvelope is retained as an alias for message-only integrations.
+type IngressEnvelope = IngressEvent
 
 type IngressMessage struct {
 	MessageID  string
@@ -56,6 +89,47 @@ type IngressMessage struct {
 	Sender     IngressSender
 	Mentions   []IngressMention
 	Content    IngressMessageContent
+}
+
+type IngressComment struct {
+	CommentID    string
+	ReplyID      string
+	FileToken    string
+	FileType     string
+	NoticeType   string
+	Operator     IngressSender
+	MentionedBot bool
+	CreateTime   time.Time
+}
+
+type IngressCardAction struct {
+	Token        string
+	Host         string
+	DeliveryType string
+	MessageID    string
+	ChatID       string
+	Operator     IngressSender
+	Action       IngressCardActionPayload
+	Context      IngressCardActionContext
+}
+
+type IngressCardActionPayload struct {
+	Value      map[string]any
+	Tag        string
+	Option     string
+	Timezone   string
+	Name       string
+	FormValue  map[string]any
+	InputValue string
+	Options    []string
+	Checked    bool
+}
+
+type IngressCardActionContext struct {
+	URL           string
+	PreviewToken  string
+	OpenMessageID string
+	OpenChatID    string
 }
 
 type IngressSender struct {
@@ -127,6 +201,8 @@ type ingressSocket interface {
 type OAPIIngressTransport struct {
 	mu sync.RWMutex
 
+	client           *larksdk.Client
+	appID            string
 	socket           ingressSocket
 	languagePriority []string
 	startTimeout     time.Duration
@@ -137,9 +213,14 @@ type OAPIIngressTransport struct {
 }
 
 var _ IngressTransport = (*OAPIIngressTransport)(nil)
+var _ IdentitySource = (*OAPIIngressTransport)(nil)
 var _ ingressSocket = (*larkws.Client)(nil)
 
 func NewOAPIIngressTransport(options OAPITransportOptions) (*OAPIIngressTransport, error) {
+	client := options.Client
+	if client == nil && hasOAPICredentials(options) {
+		client = newOAPIClient(options)
+	}
 	socket := options.ingressSocket
 	if socket == nil {
 		wsClient := options.WSClient
@@ -164,26 +245,27 @@ func NewOAPIIngressTransport(options OAPITransportOptions) (*OAPIIngressTranspor
 		startTimeout = DefaultOAPIStartTimeout
 	}
 	transport := &OAPIIngressTransport{
+		client:           client,
+		appID:            options.AppID,
 		socket:           socket,
 		languagePriority: append([]string(nil), options.LanguagePriority...),
 		startTimeout:     startTimeout,
 	}
-	if err := registerIngressMessageHandler(dispatcher, transport.handleMessage); err != nil {
+	if err := registerIngressHandlers(dispatcher, transport); err != nil {
 		return nil, err
 	}
 	return transport, nil
 }
 
-func registerIngressMessageHandler(
-	dispatcher *larkdispatcher.EventDispatcher,
-	handler func(context.Context, *larkim.P2MessageReceiveV1) error,
-) (err error) {
+func registerIngressHandlers(dispatcher *larkdispatcher.EventDispatcher, transport *OAPIIngressTransport) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("%w: %v", ErrIngressHandlerRegistered, recovered)
 		}
 	}()
-	dispatcher.OnP2MessageReceiveV1(handler)
+	dispatcher.OnP2MessageReceiveV1(transport.handleMessage)
+	dispatcher.OnCustomizedEvent("drive.notice.comment_add_v1", transport.handleComment)
+	dispatcher.OnP2CardActionTrigger(transport.handleCardAction)
 	return nil
 }
 
@@ -262,17 +344,42 @@ func (t *OAPIIngressTransport) Disconnect(context.Context) error {
 	return nil
 }
 
+func (t *OAPIIngressTransport) Identity(ctx context.Context) (IngressIdentity, error) {
+	if t == nil {
+		return IngressIdentity{}, ErrIngressTransport
+	}
+	if t.client == nil {
+		return IngressIdentity{}, ErrOAPIClient
+	}
+	return fetchIngressIdentity(ctx, t.client, t.appID)
+}
+
 func (t *OAPIIngressTransport) handleMessage(
 	ctx context.Context,
 	event *larkim.P2MessageReceiveV1,
 ) error {
+	return t.dispatch(ctx, mapIngressEnvelope(event, t.languagePriority))
+}
+
+func (t *OAPIIngressTransport) handleComment(ctx context.Context, event *larkevent.EventReq) error {
+	return t.dispatch(ctx, mapIngressCommentEvent(event))
+}
+
+func (t *OAPIIngressTransport) handleCardAction(
+	ctx context.Context,
+	event *larkcallback.CardActionTriggerEvent,
+) (*larkcallback.CardActionTriggerResponse, error) {
+	return nil, t.dispatch(ctx, mapIngressCardActionEvent(event))
+}
+
+func (t *OAPIIngressTransport) dispatch(ctx context.Context, event IngressEvent) error {
 	t.mu.RLock()
 	handler := t.handler
 	t.mu.RUnlock()
 	if handler == nil {
 		return ErrIngressHandlerUnavailable
 	}
-	return handler(ctx, mapIngressEnvelope(event, t.languagePriority))
+	return handler(ctx, event)
 }
 
 func (t *OAPIIngressTransport) signalReady() {
@@ -298,26 +405,11 @@ func (t *OAPIIngressTransport) resetFailedStart() {
 }
 
 func mapIngressEnvelope(event *larkim.P2MessageReceiveV1, languagePriority []string) IngressEnvelope {
-	var envelope IngressEnvelope
+	envelope := IngressEvent{Kind: IngressEventMessage}
 	if event == nil {
 		return envelope
 	}
-	if event.EventReq != nil {
-		envelope.Raw = cloneRawMessage(event.EventReq.Body)
-	}
-	if len(envelope.Raw) == 0 {
-		if raw, err := json.Marshal(event); err == nil {
-			envelope.Raw = raw
-		}
-	}
-	if event.EventV2Base != nil && event.EventV2Base.Header != nil {
-		header := event.EventV2Base.Header
-		envelope.EventID = header.EventID
-		envelope.EventType = header.EventType
-		envelope.AppID = header.AppID
-		envelope.TenantKey = header.TenantKey
-		envelope.CreateTime = parseIngressMillis(header.CreateTime)
-	}
+	fillIngressEventBase(&envelope, event.EventReq, event.EventV2Base, event)
 	if event.Event == nil || event.Event.Message == nil {
 		return envelope
 	}
@@ -360,6 +452,238 @@ func mapIngressEnvelope(event *larkim.P2MessageReceiveV1, languagePriority []str
 		envelope.Message.Mentions = append(envelope.Message.Mentions, mapped)
 	}
 	return envelope
+}
+
+func mapIngressCommentEvent(event *larkevent.EventReq) IngressEvent {
+	mapped := IngressEvent{Kind: IngressEventComment}
+	if event == nil {
+		return mapped
+	}
+	fillIngressEventBase(&mapped, event, nil, event)
+	var wire struct {
+		Event struct {
+			CommentID   string `json:"comment_id"`
+			ReplyID     string `json:"reply_id"`
+			FileToken   string `json:"file_token"`
+			FileType    string `json:"file_type"`
+			CreateTime  string `json:"create_time"`
+			ActionTime  string `json:"action_time"`
+			IsMentioned *bool  `json:"is_mentioned"`
+			IsMention   *bool  `json:"is_mention"`
+			UserID      *struct {
+				OpenID  string `json:"open_id"`
+				UserID  string `json:"user_id"`
+				UnionID string `json:"union_id"`
+			} `json:"user_id"`
+			NoticeMeta *struct {
+				FileToken   string `json:"file_token"`
+				FileType    string `json:"file_type"`
+				NoticeType  string `json:"notice_type"`
+				Timestamp   string `json:"timestamp"`
+				IsMentioned *bool  `json:"is_mentioned"`
+				FromUserID  *struct {
+					OpenID  string `json:"open_id"`
+					UserID  string `json:"user_id"`
+					UnionID string `json:"union_id"`
+				} `json:"from_user_id"`
+			} `json:"notice_meta"`
+		} `json:"event"`
+	}
+	if json.Unmarshal(mapped.Raw, &wire) != nil {
+		return mapped
+	}
+	comment := &IngressComment{
+		CommentID:  wire.Event.CommentID,
+		ReplyID:    wire.Event.ReplyID,
+		FileToken:  wire.Event.FileToken,
+		FileType:   wire.Event.FileType,
+		CreateTime: parseIngressMillis(ingressFirstNonEmpty(wire.Event.CreateTime, wire.Event.ActionTime)),
+	}
+	if wire.Event.UserID != nil {
+		comment.Operator = IngressSender{
+			OpenID:  wire.Event.UserID.OpenID,
+			UserID:  wire.Event.UserID.UserID,
+			UnionID: wire.Event.UserID.UnionID,
+			Type:    "user",
+		}
+	}
+	if notice := wire.Event.NoticeMeta; notice != nil {
+		comment.FileToken = ingressFirstNonEmpty(comment.FileToken, notice.FileToken)
+		comment.FileType = ingressFirstNonEmpty(comment.FileType, notice.FileType)
+		comment.NoticeType = notice.NoticeType
+		if comment.CreateTime.IsZero() {
+			comment.CreateTime = parseIngressMillis(notice.Timestamp)
+		}
+		if notice.FromUserID != nil {
+			comment.Operator = IngressSender{
+				OpenID:  notice.FromUserID.OpenID,
+				UserID:  notice.FromUserID.UserID,
+				UnionID: notice.FromUserID.UnionID,
+				Type:    "user",
+			}
+		}
+		if notice.IsMentioned != nil {
+			comment.MentionedBot = *notice.IsMentioned
+		}
+	}
+	if wire.Event.IsMentioned != nil {
+		comment.MentionedBot = *wire.Event.IsMentioned
+	} else if wire.Event.IsMention != nil {
+		comment.MentionedBot = *wire.Event.IsMention
+	}
+	if comment.CreateTime.IsZero() {
+		comment.CreateTime = mapped.CreateTime
+	}
+	mapped.Comment = comment
+	return mapped
+}
+
+func mapIngressCardActionEvent(event *larkcallback.CardActionTriggerEvent) IngressEvent {
+	mapped := IngressEvent{Kind: IngressEventCardAction}
+	if event == nil {
+		return mapped
+	}
+	fillIngressEventBase(&mapped, event.EventReq, event.EventV2Base, event)
+	if event.Event == nil {
+		return mapped
+	}
+	request := event.Event
+	action := &IngressCardAction{
+		Token:        request.Token,
+		Host:         request.Host,
+		DeliveryType: request.DeliveryType,
+	}
+	if request.Operator != nil {
+		action.Operator = IngressSender{
+			OpenID:    request.Operator.OpenID,
+			UserID:    ingressStringValue(request.Operator.UserID),
+			Type:      "user",
+			TenantKey: ingressStringValue(request.Operator.TenantKey),
+		}
+	}
+	if request.Action != nil {
+		action.Action = IngressCardActionPayload{
+			Value:      cloneIngressMap(request.Action.Value),
+			Tag:        request.Action.Tag,
+			Option:     request.Action.Option,
+			Timezone:   request.Action.Timezone,
+			Name:       request.Action.Name,
+			FormValue:  cloneIngressMap(request.Action.FormValue),
+			InputValue: request.Action.InputValue,
+			Options:    append([]string(nil), request.Action.Options...),
+			Checked:    request.Action.Checked,
+		}
+	}
+	if request.Context != nil {
+		action.MessageID = request.Context.OpenMessageID
+		action.ChatID = request.Context.OpenChatID
+		action.Context = IngressCardActionContext{
+			URL:           request.Context.URL,
+			PreviewToken:  request.Context.PreviewToken,
+			OpenMessageID: request.Context.OpenMessageID,
+			OpenChatID:    request.Context.OpenChatID,
+		}
+	}
+	mapped.CardAction = action
+	return mapped
+}
+
+func fillIngressEventBase(event *IngressEvent, request *larkevent.EventReq, base *larkevent.EventV2Base, fallback any) {
+	if event == nil {
+		return
+	}
+	if request != nil {
+		event.Raw = cloneRawMessage(request.Body)
+	}
+	if len(event.Raw) == 0 && fallback != nil {
+		if raw, err := json.Marshal(fallback); err == nil {
+			event.Raw = raw
+		}
+	}
+	if base != nil && base.Header != nil {
+		event.EventID = base.Header.EventID
+		event.EventType = base.Header.EventType
+		event.AppID = base.Header.AppID
+		event.TenantKey = base.Header.TenantKey
+		event.CreateTime = parseIngressMillis(base.Header.CreateTime)
+	}
+	var wire struct {
+		Header struct {
+			EventID    string `json:"event_id"`
+			EventType  string `json:"event_type"`
+			AppID      string `json:"app_id"`
+			TenantKey  string `json:"tenant_key"`
+			CreateTime string `json:"create_time"`
+		} `json:"header"`
+	}
+	if json.Unmarshal(event.Raw, &wire) != nil {
+		return
+	}
+	event.EventID = ingressFirstNonEmpty(event.EventID, wire.Header.EventID)
+	event.EventType = ingressFirstNonEmpty(event.EventType, wire.Header.EventType)
+	event.AppID = ingressFirstNonEmpty(event.AppID, wire.Header.AppID)
+	event.TenantKey = ingressFirstNonEmpty(event.TenantKey, wire.Header.TenantKey)
+	if event.CreateTime.IsZero() {
+		event.CreateTime = parseIngressMillis(wire.Header.CreateTime)
+	}
+}
+
+func fetchIngressIdentity(ctx context.Context, client *larksdk.Client, appID string) (IngressIdentity, error) {
+	response, err := client.Get(ctx, "/open-apis/bot/v3/info", nil, larkcore.AccessTokenTypeTenant)
+	if err != nil {
+		return IngressIdentity{}, err
+	}
+	if response == nil {
+		return IngressIdentity{}, errors.New("lark bot identity response is empty")
+	}
+	if response.StatusCode != http.StatusOK {
+		return IngressIdentity{}, fmt.Errorf("lark bot identity returned HTTP status %d", response.StatusCode)
+	}
+	var wire struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Bot  struct {
+			OpenID         string `json:"open_id"`
+			AppName        string `json:"app_name"`
+			ActivateStatus int    `json:"activate_status"`
+		} `json:"bot"`
+	}
+	if err := json.Unmarshal(response.RawBody, &wire); err != nil {
+		return IngressIdentity{}, fmt.Errorf("decode lark bot identity: %w", err)
+	}
+	if wire.Code != 0 {
+		return IngressIdentity{}, &OAPIError{Operation: "get bot identity", Code: wire.Code, Message: wire.Msg}
+	}
+	if strings.TrimSpace(wire.Bot.OpenID) == "" {
+		return IngressIdentity{}, errors.New("lark bot identity open id is missing")
+	}
+	return IngressIdentity{
+		AppID:          appID,
+		OpenID:         wire.Bot.OpenID,
+		Name:           wire.Bot.AppName,
+		ActivateStatus: wire.Bot.ActivateStatus,
+		Raw:            cloneRawMessage(response.RawBody),
+	}, nil
+}
+
+func ingressFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func cloneIngressMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
 }
 
 func parseIngressMessageContent(messageType, rawContent string, languagePriority []string) IngressMessageContent {

@@ -65,11 +65,15 @@ Supported embedding modes:
 For a durable host-owned receive boundary, use the synchronous ingress port:
 
 ```go
-type IngressHandler func(context.Context, Envelope) error
+type IngressHandler func(context.Context, IngressEvent) error
 
 type IngressTransport interface {
     Connect(context.Context, IngressHandler) error
     Disconnect(context.Context) error
+}
+
+type IdentitySource interface {
+    Identity(context.Context) (Identity, error)
 }
 
 ingress, err := NewOAPIIngressTransport(OAPILarkTransportOptions{
@@ -89,6 +93,11 @@ does not reuse the high-level `channel.Channel` receive pipeline. A nil handler
 result means only that the host completed its durable claim or inbound
 persistence. Handler errors are returned to the WebSocket callback so Feishu
 can retry; they are never converted into successful acknowledgements.
+`IngressEvent.Kind` is one of `message`, `comment`, or `card_action`, with
+exactly one corresponding payload set. The full callback remains available in
+`IngressEvent.Raw`; the legacy `Envelope` name is an alias for `IngressEvent`.
+`OAPIIngressTransport` also implements `IdentitySource` for resolving the bot
+open ID and app name through the injected or constructed OAPI client.
 
 Public lark-cli helpers use the canonical all-caps `CLI` spelling:
 

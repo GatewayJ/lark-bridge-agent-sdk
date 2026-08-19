@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	larksdk "github.com/larksuite/oapi-sdk-go/v3"
 	larkdispatcher "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
@@ -71,6 +72,171 @@ func TestOAPIIngressDispatcherReturnsHandlerErrorUnchanged(t *testing.T) {
 	payload := ingressMessagePayload(t, "evt_error", "om_error", "group", "text", `{"text":"hello"}`)
 	if _, err := dispatcher.Do(context.Background(), payload); err != wantErr {
 		t.Fatalf("dispatcher error = %v, want unchanged %v", err, wantErr)
+	}
+}
+
+func TestOAPIIngressDispatchesUnifiedEventsSynchronouslyWithoutDedup(t *testing.T) {
+	dispatcher, transport := newIngressIntegrationTransport(t, nil)
+	wantErr := errors.New("durable write failed")
+	var received IngressEvent
+	var calls int
+	if err := transport.Connect(context.Background(), func(_ context.Context, event IngressEvent) error {
+		received = event
+		calls++
+		return wantErr
+	}); err != nil {
+		t.Fatalf("Connect error = %v", err)
+	}
+	t.Cleanup(func() { _ = transport.Disconnect(context.Background()) })
+
+	tests := []struct {
+		name     string
+		payload  []byte
+		kind     IngressEventKind
+		validate func(*testing.T, IngressEvent)
+	}{
+		{
+			name:    "message",
+			payload: ingressMessagePayload(t, "evt_message", "om_message", "group", "text", `{"text":"hello"}`),
+			kind:    IngressEventMessage,
+			validate: func(t *testing.T, event IngressEvent) {
+				if event.Message == nil || event.Message.MessageID != "om_message" || event.Comment != nil || event.CardAction != nil {
+					t.Fatalf("message event = %#v", event)
+				}
+			},
+		},
+		{
+			name: "comment",
+			payload: ingressEventPayload(t, "evt_comment", "drive.notice.comment_add_v1", map[string]any{
+				"comment_id":   "comment_1",
+				"reply_id":     "reply_1",
+				"is_mentioned": true,
+				"notice_meta": map[string]any{
+					"file_token":  "doc_token",
+					"file_type":   "docx",
+					"notice_type": "add_reply",
+					"timestamp":   "2000",
+					"from_user_id": map[string]any{
+						"open_id":  "ou_commenter",
+						"user_id":  "user_commenter",
+						"union_id": "on_commenter",
+					},
+				},
+			}),
+			kind: IngressEventComment,
+			validate: func(t *testing.T, event IngressEvent) {
+				comment := event.Comment
+				if comment == nil || event.Message != nil || event.CardAction != nil ||
+					comment.CommentID != "comment_1" || comment.ReplyID != "reply_1" ||
+					comment.FileToken != "doc_token" || comment.FileType != "docx" ||
+					comment.NoticeType != "add_reply" || !comment.MentionedBot ||
+					comment.Operator.OpenID != "ou_commenter" || comment.CreateTime.UnixMilli() != 2000 {
+					t.Fatalf("comment event = %#v", event)
+				}
+			},
+		},
+		{
+			name: "card_action",
+			payload: ingressEventPayload(t, "evt_card", "card.action.trigger", map[string]any{
+				"token":         "card_token",
+				"host":          "im_message",
+				"delivery_type": "",
+				"operator": map[string]any{
+					"open_id":    "ou_operator",
+					"user_id":    "user_operator",
+					"tenant_key": "tenant_test",
+				},
+				"action": map[string]any{
+					"tag":        "button",
+					"name":       "stop",
+					"value":      map[string]any{"command": "stop"},
+					"form_value": map[string]any{"reason": "user"},
+				},
+				"context": map[string]any{
+					"open_message_id": "om_card",
+					"open_chat_id":    "oc_card",
+					"url":             "https://example.test/card",
+				},
+			}),
+			kind: IngressEventCardAction,
+			validate: func(t *testing.T, event IngressEvent) {
+				action := event.CardAction
+				if action == nil || event.Message != nil || event.Comment != nil ||
+					action.MessageID != "om_card" || action.ChatID != "oc_card" ||
+					action.Operator.OpenID != "ou_operator" || action.Action.Tag != "button" ||
+					action.Action.Value["command"] != "stop" || action.Action.FormValue["reason"] != "user" {
+					t.Fatalf("card action event = %#v", event)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := calls
+			for delivery := 1; delivery <= 2; delivery++ {
+				received = IngressEvent{}
+				if _, err := dispatcher.Do(context.Background(), test.payload); err != wantErr {
+					t.Fatalf("delivery %d error = %v, want unchanged %v", delivery, err, wantErr)
+				}
+				if received.Kind != test.kind || received.EventID == "" || !json.Valid(received.Raw) {
+					t.Fatalf("delivery %d event base = %#v", delivery, received)
+				}
+				test.validate(t, received)
+			}
+			if calls != before+2 {
+				t.Fatalf("handler calls = %d, want %d; event must not be deduplicated", calls, before+2)
+			}
+		})
+	}
+}
+
+func TestOAPIIngressIdentitySourceUsesInjectedClient(t *testing.T) {
+	server := newOAPICommentTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			writeOAPIJSON(t, w, map[string]any{
+				"code": 0, "msg": "ok", "tenant_access_token": "tenant-token", "expire": 7200,
+			})
+		case "/open-apis/bot/v3/info":
+			if r.Header.Get("Authorization") != "Bearer tenant-token" {
+				t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+			}
+			writeOAPIJSON(t, w, map[string]any{
+				"code": 0,
+				"msg":  "ok",
+				"bot": map[string]any{
+					"open_id":         "ou_bot",
+					"app_name":        "CSGClaw Bot",
+					"activate_status": 2,
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	client := larksdk.NewClient("cli_identity", "secret",
+		larksdk.WithOpenBaseUrl(server.URL),
+		larksdk.WithHttpClient(server.Client()),
+		larksdk.WithReqTimeout(5*time.Second),
+	)
+	transport, err := NewOAPIIngressTransport(OAPITransportOptions{
+		AppID:         "cli_identity",
+		Client:        client,
+		ingressSocket: &fakeIngressSocket{dispatcher: larkdispatcher.NewEventDispatcher("", "")},
+	})
+	if err != nil {
+		t.Fatalf("NewOAPIIngressTransport error = %v", err)
+	}
+	var _ IdentitySource = transport
+
+	identity, err := transport.Identity(context.Background())
+	if err != nil {
+		t.Fatalf("Identity error = %v", err)
+	}
+	if identity.AppID != "cli_identity" || identity.OpenID != "ou_bot" ||
+		identity.Name != "CSGClaw Bot" || identity.ActivateStatus != 2 || !json.Valid(identity.Raw) {
+		t.Fatalf("identity = %#v", identity)
 	}
 }
 
@@ -301,6 +467,26 @@ func ingressMessagePayload(t *testing.T, eventID, messageID, chatType, messageTy
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
+	}
+	return raw
+}
+
+func ingressEventPayload(t *testing.T, eventID, eventType string, event map[string]any) []byte {
+	t.Helper()
+	payload := map[string]any{
+		"schema": "2.0",
+		"header": map[string]any{
+			"event_id":    eventID,
+			"event_type":  eventType,
+			"app_id":      "cli_test",
+			"tenant_key":  "tenant_test",
+			"create_time": "1000",
+		},
+		"event": event,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal %s payload: %v", eventType, err)
 	}
 	return raw
 }
