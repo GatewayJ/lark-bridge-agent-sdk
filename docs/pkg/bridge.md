@@ -118,6 +118,9 @@ intake. The managed path covers:
   multi-sender prompt annotations, and attachment-reference cleanup;
 - `markdown`, `text`, and `card` reply modes, including single-message
   streaming updates when the transport supports message patching;
+- opt-in streaming-card rollover through
+  `LarkManagedOptions.CardRollover`, with serialized-byte and successful-update
+  limits and continuation cards containing only unpublished output;
 - optional COT process messages through `LarkCOTClient`, followed by a separate
   final-answer reply;
 - best-effort `Typing` reactions for non-card reply modes when reactions are

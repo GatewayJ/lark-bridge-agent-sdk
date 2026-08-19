@@ -56,6 +56,7 @@ type managedLarkIntake struct {
 	presentationMu sync.RWMutex
 	replyMode      LarkReplyMode
 	showToolCalls  bool
+	cardRollover   appimpresenter.CardRolloverPolicy
 	cotMessages    appcot.Mode
 	workspaces     CommandWorkspaceStore
 	cotClient      appcot.Client
@@ -137,25 +138,29 @@ func newManagedLarkIntake(options managedLarkIntakeOptions) *managedLarkIntake {
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	intake := &managedLarkIntake{
-		client:               options.Client,
-		transport:            options.Transport,
-		comments:             options.Comments,
-		media:                options.Media,
-		appID:                options.AppID,
-		commandOptions:       commandOptions,
-		quoteResolver:        quoteResolver,
-		callbackAuth:         options.Managed.CallbackAuth,
-		callbackTTL:          managedCallbackTTL(options.Managed.CallbackTTL),
-		cardSettle:           managedCardActionSettle(options.Managed.CardActionSettle),
-		accountRestart:       managedAccountReconnectDelay(options.Managed.AccountReconnect),
-		closeTimeout:         managedCloseTimeout(options.Managed.CloseTimeout),
-		scopeChecker:         scopeChecker,
-		scopeGrant:           scopeGrant,
-		reactioner:           reactioner,
-		infoSource:           infoSource,
-		infoInterval:         managedInfoRefreshInterval(options.Managed.InfoRefreshInterval),
-		replyMode:            normalizeLarkReplyMode(options.Managed.MessageReplyMode),
-		showToolCalls:        managedShowToolCalls(options.Managed.ShowToolCalls),
+		client:         options.Client,
+		transport:      options.Transport,
+		comments:       options.Comments,
+		media:          options.Media,
+		appID:          options.AppID,
+		commandOptions: commandOptions,
+		quoteResolver:  quoteResolver,
+		callbackAuth:   options.Managed.CallbackAuth,
+		callbackTTL:    managedCallbackTTL(options.Managed.CallbackTTL),
+		cardSettle:     managedCardActionSettle(options.Managed.CardActionSettle),
+		accountRestart: managedAccountReconnectDelay(options.Managed.AccountReconnect),
+		closeTimeout:   managedCloseTimeout(options.Managed.CloseTimeout),
+		scopeChecker:   scopeChecker,
+		scopeGrant:     scopeGrant,
+		reactioner:     reactioner,
+		infoSource:     infoSource,
+		infoInterval:   managedInfoRefreshInterval(options.Managed.InfoRefreshInterval),
+		replyMode:      normalizeLarkReplyMode(options.Managed.MessageReplyMode),
+		showToolCalls:  managedShowToolCalls(options.Managed.ShowToolCalls),
+		cardRollover: appimpresenter.CardRolloverPolicy{
+			MaxBytes:   options.Managed.CardRollover.MaxBytes,
+			MaxUpdates: options.Managed.CardRollover.MaxUpdates,
+		},
 		cotMessages:          managedCotMessagesMode(options.Managed.CotMessages),
 		workspaces:           options.Workspaces,
 		cotClient:            wrapInternalLarkCOTClient(cotClient),
@@ -895,6 +900,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 			Options:       input.Options,
 			ReplyMode:     input.ReplyMode,
 			HideToolCalls: input.HideToolCalls,
+			CardRollover:  i.cardRollover,
 			IdleTimeout:   input.IdleTimeout,
 			RenderOptions: input.RenderOptions,
 		})
@@ -915,6 +921,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 			Options:       input.Options,
 			ReplyMode:     input.ReplyMode,
 			HideToolCalls: input.HideToolCalls,
+			CardRollover:  i.cardRollover,
 			IdleTimeout:   input.IdleTimeout,
 			RenderOptions: input.RenderOptions,
 		})
@@ -934,6 +941,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 		Options:         input.Options,
 		ReplyMode:       input.ReplyMode,
 		HideToolCalls:   input.HideToolCalls,
+		CardRollover:    i.cardRollover,
 		IdleTimeout:     input.IdleTimeout,
 		DeferUntilDone:  true,
 		FinalAnswerOnly: true,

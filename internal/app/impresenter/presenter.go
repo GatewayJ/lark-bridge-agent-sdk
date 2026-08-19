@@ -95,15 +95,23 @@ type Input struct {
 	StartedAt       time.Time
 	StreamThrottle  time.Duration
 	HideToolCalls   bool
+	CardRollover    CardRolloverPolicy
 	IdleTimeout     time.Duration
 	DeferUntilDone  bool
 	FinalAnswerOnly bool
 	BeforeFinal     func(context.Context, cardrender.RunState) error
 }
 
+// CardRolloverPolicy controls when a streaming card continues in a new
+// message. Zero values disable the corresponding limit.
+type CardRolloverPolicy struct {
+	MaxBytes   int
+	MaxUpdates int
+}
+
 func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 	state := cardrender.NewRunState(cardrender.RunStateInput{StartedAt: input.StartedAt})
-	var cardMessageID string
+	cardStream := newCardStreamState(state)
 	var markdownMessageID string
 	var markdownUpdateFailed bool
 	lastCardUpdate := time.Time{}
@@ -113,7 +121,7 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 		if err != nil {
 			return state, err
 		}
-		cardMessageID = result.MessageID
+		cardStream.markSent(result.MessageID)
 		lastCardUpdate = time.Now()
 	}
 	if normalizeReplyMode(input.ReplyMode) == ReplyMarkdown && !input.DeferUntilDone {
@@ -171,9 +179,11 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 				}
 				trackToolFlight(inFlightTools, event)
 				armIdleTimer()
-				state = cardrender.Reduce(state, toCardEvent(event))
-				if !input.DeferUntilDone && shouldStreamCardUpdate(input, cardMessageID, lastCardUpdate) {
-					if err := updateRunCard(ctx, input, state, cardMessageID); err == nil {
+				cardEvent := toCardEvent(event)
+				state = cardrender.Reduce(state, cardEvent)
+				cardStream.reduce(cardEvent)
+				if !input.DeferUntilDone && shouldStreamCardUpdate(input, cardStream.messageID, lastCardUpdate) {
+					if err := cardStream.flush(ctx, input); err == nil {
 						lastCardUpdate = time.Now()
 					}
 				}
@@ -206,7 +216,20 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 			return state, err
 		}
 	}
-	return state, sendFinal(ctx, input, state, cardMessageID, markdownMessageID, markdownUpdateFailed)
+	finalCardState := state
+	if normalizeReplyMode(input.ReplyMode) == ReplyCard {
+		if input.DeferUntilDone && shouldSplitFinalCard(input, state) {
+			return state, sendSplitFinalCards(ctx, input, state)
+		}
+		if !input.DeferUntilDone {
+			var err error
+			finalCardState, err = cardStream.prepareFinal(ctx, input, state)
+			if err != nil {
+				return state, err
+			}
+		}
+	}
+	return state, sendFinal(ctx, input, finalCardState, cardStream.messageID, markdownMessageID, markdownUpdateFailed)
 }
 
 func trackToolFlight(inFlight map[string]struct{}, event agentport.AgentEvent) {

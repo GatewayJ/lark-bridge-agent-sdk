@@ -389,6 +389,10 @@ instance, err := bridge.New(bridge.Options{
     LarkTransport: transport,
     LarkManaged: bridge.LarkManagedOptions{
         InitialOwnerOpenID: "ou_creator",
+        CardRollover: bridge.LarkCardRolloverOptions{
+            MaxBytes:   20 * 1024,
+            MaxUpdates: 40,
+        },
         CommandOptions: bridge.CommandOptions{Workspaces: workspaces},
     },
 })
@@ -397,6 +401,12 @@ instance, err := bridge.New(bridge.Options{
 `InitialOwnerOpenID` is optional. Use it when your host already knows the app
 creator/owner from a QR registration or onboarding flow; the bridge still
 refreshes the canonical app owner from Feishu after startup.
+
+`CardRollover` is optional and applies to managed `card` replies. When either
+positive limit is reached, the current card is closed and only output not yet
+shown is sent in a continuation card. `MaxBytes` counts the serialized CardKit
+JSON bytes; `MaxUpdates` counts successful streaming content updates. A zero
+value disables that limit.
 
 ## Cards And Telemetry
 

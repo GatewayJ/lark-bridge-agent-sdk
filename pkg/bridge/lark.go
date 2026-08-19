@@ -8,14 +8,14 @@ import (
 	"sync"
 	"time"
 
-	channeltypes "github.com/larksuite/oapi-sdk-go/v3/channel/types"
-	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	internallark "github.com/GatewayJ/lark-bridge-agent-sdk/internal/adapters/lark"
 	appdispatch "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/carddispatch"
 	appcot "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/cotpresenter"
 	appintake "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/intake"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/larkcli"
 	appmedia "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/media"
+	channeltypes "github.com/larksuite/oapi-sdk-go/v3/channel/types"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 )
 
 var (
@@ -35,12 +35,26 @@ var (
 	ErrLarkOAPIMessageMissing    = internallark.ErrOAPIMessageMissing
 	ErrLarkOAPIReplyThread       = internallark.ErrOAPIReplyThread
 	ErrLarkOAPIThreadIDSend      = internallark.ErrOAPIThreadIDSend
+	ErrLarkOAPIInboundAckMode    = internallark.ErrOAPIInboundAckMode
+	ErrLarkOAPIIntakeMissing     = internallark.ErrOAPIIntakeMissing
 )
 
 const (
 	DefaultLarkOAPIRequestTimeout = internallark.DefaultOAPIRequestTimeout
 	DefaultLarkOAPIStartTimeout   = internallark.DefaultOAPIStartTimeout
 	DefaultLarkOAPIStreamThrottle = internallark.DefaultOAPIStreamThrottle
+)
+
+type InboundAckMode uint8
+
+const (
+	// InboundAckSDKDefault preserves the larksuite channel facade's default
+	// asynchronous message dispatch behavior.
+	InboundAckSDKDefault InboundAckMode = iota
+	// InboundAckAfterIntake acknowledges accepted message and comment events
+	// only after the registered intake handler returns nil. The intake handler
+	// should durably persist or claim the event before returning.
+	InboundAckAfterIntake
 )
 
 type LarkIncomingEvent struct {
@@ -312,6 +326,10 @@ type OAPILarkTransportOptions struct {
 
 	DisableWebSocket   bool
 	EnableSDKChatQueue bool
+	// InboundAckMode controls when accepted message and comment events are
+	// acknowledged. InboundAckAfterIntake bypasses SDK message batching and
+	// requires the intake implementation to be idempotent under redelivery.
+	InboundAckMode InboundAckMode
 }
 
 const defaultOAPILarkTransportSource = "lark-channel-bridge"
@@ -369,6 +387,7 @@ func NewOAPILarkTransport(options OAPILarkTransportOptions) (*OAPILarkTransport,
 		ClientAssertionProvider: options.ClientAssertionProvider,
 		DisableWebSocket:        options.DisableWebSocket,
 		EnableSDKChatQueue:      options.EnableSDKChatQueue,
+		InboundAckMode:          internallark.InboundAckMode(options.InboundAckMode),
 	})
 	if err != nil {
 		return nil, err

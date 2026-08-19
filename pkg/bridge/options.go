@@ -41,6 +41,7 @@ type LarkManagedOptions struct {
 	FlushTimeout        time.Duration
 	MessageReplyMode    LarkReplyMode
 	ShowToolCalls       *bool
+	CardRollover        LarkCardRolloverOptions
 	CommandOptions      CommandOptions
 	InitialOwnerOpenID  string
 	QuoteResolver       LarkQuoteResolver
@@ -56,6 +57,18 @@ type LarkManagedOptions struct {
 	CotMessages         LarkCotMessagesMode
 	RuntimeInfo         LarkRuntimeInfoSource
 	InfoRefreshInterval time.Duration
+}
+
+// LarkCardRolloverOptions controls when a streaming card is closed and the
+// remaining output continues in a new card. Zero values disable the
+// corresponding limit.
+type LarkCardRolloverOptions struct {
+	// MaxBytes is the serialized CardKit JSON size that triggers a continuation.
+	MaxBytes int
+	// MaxUpdates is the number of successful streaming content updates allowed
+	// before the next visible output continues in a new card. The initial send
+	// and the best-effort close update are not counted.
+	MaxUpdates int
 }
 
 type LarkReplyMode string

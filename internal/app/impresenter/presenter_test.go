@@ -2,7 +2,9 @@ package impresenter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +102,155 @@ func TestPresentCardModeStreamsThrottledUpdates(t *testing.T) {
 	}
 	if !strings.Contains(mustCardBody(ch.updates[len(ch.updates)-1].Card), "hello live") {
 		t.Fatalf("final update body = %#v", ch.updates[len(ch.updates)-1].Card)
+	}
+}
+
+func TestPresentCardModeRollsOverAfterUpdateLimit(t *testing.T) {
+	ch := &fakeChannel{}
+	run := delayedRun{
+		{after: 5 * time.Millisecond, event: textEvent("first")},
+		{after: 5 * time.Millisecond, event: textEvent(" second")},
+		{event: agentport.AgentEvent{Type: agentport.EventDone}},
+	}
+
+	_, err := Present(context.Background(), Input{
+		Run:            run,
+		Channel:        ch,
+		ChatID:         "oc_chat",
+		ReplyMode:      ReplyCard,
+		StreamThrottle: time.Millisecond,
+		CardRollover: CardRolloverPolicy{
+			MaxUpdates: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.cards) != 2 {
+		t.Fatalf("cards = %#v, want initial card plus continuation", ch.cards)
+	}
+	continuation := mustCardBody(ch.cards[1].Card)
+	if !strings.Contains(continuation, "second") || strings.Contains(continuation, "first") {
+		t.Fatalf("continuation body = %q, want only unpublished output", continuation)
+	}
+	if !strings.Contains(continuation, continuationCardNote) {
+		t.Fatalf("continuation body = %q, want continuation marker", continuation)
+	}
+	if !hasCardUpdate(ch.updates, "card-message-1", continuedCardNote) {
+		t.Fatalf("updates = %#v, want old card frozen with continuation marker", ch.updates)
+	}
+	if !hasCardUpdate(ch.updates, "card-message-2", "second") {
+		t.Fatalf("updates = %#v, want final update on the continuation card", ch.updates)
+	}
+}
+
+func TestPresentCardModeRollsOverBeforeSerializedSizeLimit(t *testing.T) {
+	input := Input{ReplyMode: ReplyCard}
+	first := strings.Repeat("甲", 80)
+	second := strings.Repeat("乙", 80)
+	state := cardrender.NewRunState(cardrender.RunStateInput{})
+	state = cardrender.Reduce(state, toCardEvent(textEvent(first)))
+	firstSize := serializedCardSize(t, renderRunCard(input, state))
+	state = cardrender.Reduce(state, toCardEvent(textEvent(second)))
+	secondSize := serializedCardSize(t, renderRunCard(input, state))
+	limit := firstSize + (secondSize-firstSize)/2
+
+	ch := &fakeChannel{}
+	run := delayedRun{
+		{after: 5 * time.Millisecond, event: textEvent(first)},
+		{after: 5 * time.Millisecond, event: textEvent(second)},
+		{event: agentport.AgentEvent{Type: agentport.EventDone}},
+	}
+	input.Run = run
+	input.Channel = ch
+	input.ChatID = "oc_chat"
+	input.StreamThrottle = time.Millisecond
+	input.CardRollover.MaxBytes = limit
+
+	_, err := Present(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.cards) != 2 {
+		t.Fatalf("cards = %#v, want size-triggered continuation", ch.cards)
+	}
+	continuation := mustCardBody(ch.cards[1].Card)
+	if !strings.Contains(continuation, second) || strings.Contains(continuation, first) {
+		t.Fatalf("continuation body = %q, want only the size-overflow delta", continuation)
+	}
+}
+
+func TestPresentCardModeSplitsOneOversizedDeltaAcrossContinuationCards(t *testing.T) {
+	input := Input{ReplyMode: ReplyCard}
+	chunk := strings.Repeat("x", 120)
+	state := cardrender.NewRunState(cardrender.RunStateInput{})
+	state = cardrender.Reduce(state, toCardEvent(textEvent(chunk)))
+	limit := serializedCardSize(t, renderContinuationCard(input, state))
+	output := strings.Repeat("x", 1200)
+
+	ch := &fakeChannel{}
+	input.Run = delayedRun{
+		{after: 5 * time.Millisecond, event: textEvent(output)},
+		{event: agentport.AgentEvent{Type: agentport.EventDone}},
+	}
+	input.Channel = ch
+	input.ChatID = "oc_chat"
+	input.StreamThrottle = time.Millisecond
+	input.CardRollover.MaxBytes = limit
+
+	_, err := Present(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.cards) < 3 {
+		t.Fatalf("cards = %d, want multiple continuation cards", len(ch.cards))
+	}
+	var delivered strings.Builder
+	for _, sent := range ch.cards[1:] {
+		if size := serializedCardSize(t, sent.Card); size > limit {
+			t.Fatalf("continuation card bytes = %d, limit = %d", size, limit)
+		}
+		delivered.WriteString(primaryCardMarkdown(sent.Card))
+	}
+	if delivered.String() != output {
+		t.Fatalf("delivered output length = %d, want %d", delivered.Len(), len(output))
+	}
+}
+
+func TestPresentCardModeSplitsOversizedDeferredFinalAnswer(t *testing.T) {
+	input := Input{ReplyMode: ReplyCard, DeferUntilDone: true, FinalAnswerOnly: true}
+	chunk := strings.Repeat("z", 120)
+	state := cardrender.NewRunState(cardrender.RunStateInput{})
+	state = cardrender.Reduce(state, toCardEvent(textEvent(chunk)))
+	state = cardrender.Reduce(state, toCardEvent(agentport.AgentEvent{Type: agentport.EventDone}))
+	limit := serializedCardSize(t, renderContinuationCard(input, state))
+	output := strings.Repeat("z", 1200)
+
+	ch := &fakeChannel{}
+	input.Run = fakeRun([]agentport.AgentEvent{
+		textEvent(output),
+		{Type: agentport.EventDone},
+	})
+	input.Channel = ch
+	input.ChatID = "oc_chat"
+	input.CardRollover.MaxBytes = limit
+
+	_, err := Present(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.cards) < 2 || len(ch.updates) != 0 {
+		t.Fatalf("cards = %d updates = %d, want split final cards without updates", len(ch.cards), len(ch.updates))
+	}
+	var delivered strings.Builder
+	for _, sent := range ch.cards {
+		if size := serializedCardSize(t, sent.Card); size > limit {
+			t.Fatalf("final card bytes = %d, limit = %d", size, limit)
+		}
+		delivered.WriteString(primaryCardMarkdown(sent.Card))
+	}
+	if delivered.String() != output {
+		t.Fatalf("delivered output length = %d, want %d", delivered.Len(), len(output))
 	}
 }
 
@@ -454,7 +605,7 @@ func (c *fakeChannel) SendMessage(_ context.Context, req SendMessageRequest) (Se
 
 func (c *fakeChannel) SendCard(_ context.Context, req SendCardRequest) (SendCardResult, error) {
 	c.cards = append(c.cards, req)
-	return SendCardResult{MessageID: "card-message-1"}, nil
+	return SendCardResult{MessageID: fmt.Sprintf("card-message-%d", len(c.cards))}, nil
 }
 
 func (c *fakeChannel) UpdateCard(_ context.Context, req UpdateCardRequest) error {
@@ -491,6 +642,39 @@ func mustCardBody(card map[string]any) string {
 
 func flattenCard(card map[string]any) string {
 	return strings.Join(flattenStrings(card), "\n")
+}
+
+func hasCardUpdate(updates []UpdateCardRequest, messageID string, content string) bool {
+	for _, update := range updates {
+		if update.MessageID == messageID && strings.Contains(flattenCard(update.Card), content) {
+			return true
+		}
+	}
+	return false
+}
+
+func serializedCardSize(t *testing.T, card map[string]any) int {
+	t.Helper()
+	encoded, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	return len(encoded)
+}
+
+func primaryCardMarkdown(card map[string]any) string {
+	body, _ := card["body"].(map[string]any)
+	elements, _ := body["elements"].([]any)
+	var content strings.Builder
+	for _, raw := range elements {
+		element, _ := raw.(map[string]any)
+		if element["tag"] != "markdown" || element["text_size"] != nil {
+			continue
+		}
+		text, _ := element["content"].(string)
+		content.WriteString(text)
+	}
+	return content.String()
 }
 
 func flattenStrings(value any) []string {

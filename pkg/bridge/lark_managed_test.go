@@ -123,6 +123,20 @@ func TestManagedLarkIntakeExplicitQuoteResolverWinsOverTransportDefault(t *testi
 	}
 }
 
+func TestManagedLarkIntakeCarriesCardRolloverPolicy(t *testing.T) {
+	intake := newManagedLarkIntake(managedLarkIntakeOptions{
+		Managed: LarkManagedOptions{CardRollover: LarkCardRolloverOptions{
+			MaxBytes:   20480,
+			MaxUpdates: 40,
+		}},
+	})
+	defer intake.Close()
+
+	if intake.cardRollover.MaxBytes != 20480 || intake.cardRollover.MaxUpdates != 40 {
+		t.Fatalf("card rollover = %#v", intake.cardRollover)
+	}
+}
+
 func TestManagedLarkIntakeResolvesNonRootTopicReplyQuote(t *testing.T) {
 	targets := make(chan LarkQuoteTarget, 1)
 	intake := newManagedLarkIntake(managedLarkIntakeOptions{

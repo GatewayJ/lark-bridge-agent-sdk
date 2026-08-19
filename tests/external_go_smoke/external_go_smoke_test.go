@@ -167,20 +167,25 @@ func TestBridgePublicAPICompiles(t *testing.T) {
 		t.Fatalf("RenderRunCard status=%q", card.Status)
 	}
 	transport, err := bridge.NewOAPILarkTransport(bridge.OAPILarkTransportOptions{
-		AppID: "cli_smoke",
-		AppSecret: "secret",
+		AppID:            "cli_smoke",
+		AppSecret:        "secret",
 		DisableWebSocket: true,
+		InboundAckMode:   bridge.InboundAckAfterIntake,
 	})
 	if err != nil || transport == nil {
 		t.Fatalf("NewOAPILarkTransport transport=%#v err=%v", transport, err)
 	}
 	fakeTransport := bridge.NewFakeLarkTransport(bridge.LarkBotIdentity{OpenID: "ou_smoke", Name: "Smoke Bot"})
 	instance, err := bridge.New(bridge.Options{
-		Home: t.TempDir(),
-		Profile: "codex",
-		AppID: "cli_smoke",
-		AgentKind: bridge.RuntimeAgentCodex,
+		Home:          t.TempDir(),
+		Profile:       "codex",
+		AppID:         "cli_smoke",
+		AgentKind:     bridge.RuntimeAgentCodex,
 		LarkTransport: fakeTransport,
+		LarkManaged: bridge.LarkManagedOptions{CardRollover: bridge.LarkCardRolloverOptions{
+			MaxBytes:   20 * 1024,
+			MaxUpdates: 40,
+		}},
 		LarkIntake: bridge.LarkIntakeSinkFunc(func(context.Context, bridge.LarkNormalizedEvent) error {
 			return nil
 		}),

@@ -106,6 +106,30 @@ func TestOAPILarkTransportZeroValueReturnsNilTransportErrors(t *testing.T) {
 	}
 }
 
+func TestOAPILarkTransportAcceptsAfterIntakeAckMode(t *testing.T) {
+	transport, err := NewOAPILarkTransport(OAPILarkTransportOptions{
+		AppID:            "cli_test",
+		AppSecret:        "secret",
+		DisableWebSocket: true,
+		InboundAckMode:   InboundAckAfterIntake,
+	})
+	if err != nil {
+		t.Fatalf("NewOAPILarkTransport error = %v", err)
+	}
+	if transport == nil {
+		t.Fatal("NewOAPILarkTransport returned nil transport")
+	}
+}
+
+func TestOAPILarkTransportRejectsInvalidAckMode(t *testing.T) {
+	_, err := NewOAPILarkTransport(OAPILarkTransportOptions{
+		InboundAckMode: InboundAckMode(255),
+	})
+	if !errors.Is(err, ErrLarkOAPIInboundAckMode) {
+		t.Fatalf("NewOAPILarkTransport error = %v, want %v", err, ErrLarkOAPIInboundAckMode)
+	}
+}
+
 type captureLarkCliRunner struct {
 	invocations []LarkCLICommandInvocation
 }
