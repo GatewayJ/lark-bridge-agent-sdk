@@ -485,6 +485,42 @@ func TestPresentMarkdownModeRolloverSettlementFailureDoesNotBlockContinuation(t 
 	}
 }
 
+func TestPresentMarkdownModeDefersOversizedRolloverUntilTerminal(t *testing.T) {
+	ch := &fakeChannel{}
+	largeFinal := strings.Repeat("gamma", defaultMaxLiveMarkdown)
+	run := delayedRun{
+		{event: textEvent("alpha")},
+		{after: 25 * time.Millisecond, event: textEvent(" beta")},
+		{after: 25 * time.Millisecond, event: textEvent(largeFinal)},
+		{event: agentport.AgentEvent{Type: agentport.EventDone}},
+	}
+
+	_, err := Present(context.Background(), Input{
+		Run:               run,
+		Channel:           ch,
+		ChatID:            "oc_chat",
+		ReplyMode:         ReplyMarkdown,
+		StreamThrottle:    20 * time.Millisecond,
+		MaxMessageUpdates: 1,
+	})
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.messages) != 2 {
+		t.Fatalf("messages = %#v, want oversized content sent once at terminal", ch.messages)
+	}
+	continuation := ch.messages[1].Content.Markdown
+	if !strings.Contains(continuation, largeFinal) || strings.Contains(continuation, "alpha") || strings.Contains(continuation, "beta") {
+		t.Fatalf("terminal continuation repeated prior content or lost final content")
+	}
+	if strings.Contains(continuation, "正在输出") || strings.Contains(continuation, "正在思考") {
+		t.Fatalf("terminal continuation retained a streaming footer")
+	}
+	if len(ch.messageUpdates) != 2 || ch.messageUpdates[1].MessageID != "message-1" {
+		t.Fatalf("message updates = %#v, oversized active continuation should not be patched", ch.messageUpdates)
+	}
+}
+
 func TestPresentMarkdownModeFallbackSendsOnlyUnpublishedContent(t *testing.T) {
 	ch := &fakeChannel{messageUpdateErrs: []error{nil, errors.New("patch denied")}}
 	run := delayedRun{

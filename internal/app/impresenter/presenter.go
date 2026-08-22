@@ -21,7 +21,8 @@ const (
 const (
 	defaultStreamThrottle    = 400 * time.Millisecond
 	defaultIdleStopTimeout   = 5 * time.Second
-	defaultMaxMessageUpdates = 18 // Keep headroom below Feishu's 20-edit limit.
+	defaultMaxMessageUpdates = 18   // Keep headroom below Feishu's 20-edit limit.
+	defaultMaxLiveMarkdown   = 3000 // Stay below the OAPI channel's 3500-byte auto-split threshold.
 )
 
 type SendOptions struct {

@@ -96,6 +96,13 @@ func (s *markdownStreamState) rollover(ctx context.Context, input Input, state c
 	if strings.TrimSpace(body) == "" {
 		return s.update(ctx, input, state)
 	}
+	if isActive(state) && len(body) > defaultMaxLiveMarkdown {
+		// The Lark OAPI channel auto-splits long markdown sends and returns only
+		// the first message ID. Sending an active footer that way would leave the
+		// final chunk stuck on "正在输出" because only the first chunk can be
+		// patched. Wait for the terminal state, then all chunks are final at send.
+		return nil
+	}
 
 	result, err := sendMarkdownBody(ctx, input, body)
 	if err != nil {
