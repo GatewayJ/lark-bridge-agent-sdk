@@ -385,6 +385,137 @@ func TestPresentMarkdownModeStreamsThrottledUpdates(t *testing.T) {
 	}
 }
 
+func TestPresentMarkdownModeClearsFooterWhenRunHasNoContent(t *testing.T) {
+	ch := &fakeChannel{}
+	run := fakeRun([]agentport.AgentEvent{{Type: agentport.EventDone}})
+
+	_, err := Present(context.Background(), Input{
+		Run:       run,
+		Channel:   ch,
+		ChatID:    "oc_chat",
+		ReplyMode: ReplyMarkdown,
+	})
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.messages) != 1 || !strings.Contains(ch.messages[0].Content.Markdown, "正在思考") {
+		t.Fatalf("initial placeholder = %#v", ch.messages)
+	}
+	if len(ch.messageUpdates) != 1 {
+		t.Fatalf("message updates = %#v, want terminal settlement", ch.messageUpdates)
+	}
+	final := ch.messageUpdates[0].Content.Markdown
+	if !strings.Contains(final, "未返回内容") || strings.Contains(final, "正在思考") || strings.Contains(final, "正在输出") {
+		t.Fatalf("terminal settlement = %q", final)
+	}
+}
+
+func TestPresentMarkdownModeRollsOverWithoutRepeatingVisibleContent(t *testing.T) {
+	ch := &fakeChannel{}
+	run := delayedRun{
+		{event: textEvent("alpha")},
+		{after: 5 * time.Millisecond, event: textEvent(" beta")},
+		{after: 5 * time.Millisecond, event: textEvent(" gamma")},
+		{event: agentport.AgentEvent{Type: agentport.EventDone}},
+	}
+
+	_, err := Present(context.Background(), Input{
+		Run:               run,
+		Channel:           ch,
+		ChatID:            "oc_chat",
+		ReplyMode:         ReplyMarkdown,
+		StreamThrottle:    time.Millisecond,
+		MaxMessageUpdates: 1,
+	})
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.messages) != 2 {
+		t.Fatalf("messages = %#v, want initial message plus continuation", ch.messages)
+	}
+	continuation := ch.messages[1].Content.Markdown
+	if !strings.Contains(continuation, "gamma") || strings.Contains(continuation, "alpha") || strings.Contains(continuation, "beta") {
+		t.Fatalf("continuation repeated prior content: %q", continuation)
+	}
+	if len(ch.messageUpdates) != 3 {
+		t.Fatalf("message updates = %#v, want stream, settlement, and final updates", ch.messageUpdates)
+	}
+	settled := ch.messageUpdates[1]
+	if settled.MessageID != "message-1" || !strings.Contains(settled.Content.Markdown, "alpha") || !strings.Contains(settled.Content.Markdown, "beta") {
+		t.Fatalf("settled prior message = %#v", settled)
+	}
+	if strings.Contains(settled.Content.Markdown, "正在输出") {
+		t.Fatalf("settled prior message retained streaming footer: %#v", settled)
+	}
+	final := ch.messageUpdates[2]
+	if final.MessageID != "message-2" || !strings.Contains(final.Content.Markdown, "gamma") {
+		t.Fatalf("final continuation update = %#v", final)
+	}
+	if strings.Contains(final.Content.Markdown, "alpha") || strings.Contains(final.Content.Markdown, "beta") || strings.Contains(final.Content.Markdown, "正在输出") {
+		t.Fatalf("final continuation repeated content or retained footer: %#v", final)
+	}
+}
+
+func TestPresentMarkdownModeRolloverSettlementFailureDoesNotBlockContinuation(t *testing.T) {
+	settleErr := errors.New("temporary settlement failure")
+	ch := &fakeChannel{messageUpdateErrs: []error{nil, settleErr, settleErr, nil}}
+	run := delayedRun{
+		{event: textEvent("alpha")},
+		{after: 5 * time.Millisecond, event: textEvent(" beta")},
+		{after: 5 * time.Millisecond, event: textEvent(" gamma")},
+		{event: agentport.AgentEvent{Type: agentport.EventDone}},
+	}
+
+	_, err := Present(context.Background(), Input{
+		Run:               run,
+		Channel:           ch,
+		ChatID:            "oc_chat",
+		ReplyMode:         ReplyMarkdown,
+		StreamThrottle:    time.Millisecond,
+		MaxMessageUpdates: 1,
+	})
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.messages) != 2 || !strings.Contains(ch.messages[1].Content.Markdown, "gamma") {
+		t.Fatalf("continuation was blocked by settlement failure: %#v", ch.messages)
+	}
+	if len(ch.messageUpdates) != 4 || ch.messageUpdates[len(ch.messageUpdates)-1].MessageID != "message-2" {
+		t.Fatalf("message updates = %#v, want two settlement attempts and final continuation", ch.messageUpdates)
+	}
+}
+
+func TestPresentMarkdownModeFallbackSendsOnlyUnpublishedContent(t *testing.T) {
+	ch := &fakeChannel{messageUpdateErrs: []error{nil, errors.New("patch denied")}}
+	run := delayedRun{
+		{event: textEvent("alpha")},
+		{after: 5 * time.Millisecond, event: textEvent(" beta")},
+		{after: 5 * time.Millisecond, event: textEvent(" gamma")},
+		{event: agentport.AgentEvent{Type: agentport.EventDone}},
+	}
+
+	_, err := Present(context.Background(), Input{
+		Run:            run,
+		Channel:        ch,
+		ChatID:         "oc_chat",
+		ReplyMode:      ReplyMarkdown,
+		StreamThrottle: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Present returned error: %v", err)
+	}
+	if len(ch.messages) != 2 {
+		t.Fatalf("messages = %#v, want initial stream plus fallback", ch.messages)
+	}
+	fallback := ch.messages[1].Content.Markdown
+	if !strings.Contains(fallback, "gamma") || strings.Contains(fallback, "alpha") || strings.Contains(fallback, "beta") {
+		t.Fatalf("fallback repeated already published content: %q", fallback)
+	}
+	if strings.Contains(fallback, "正在输出") {
+		t.Fatalf("fallback retained streaming footer: %q", fallback)
+	}
+}
+
 func TestPresentMarkdownModeFallsBackToNewMessageWhenFinalUpdateFails(t *testing.T) {
 	ch := &fakeChannel{messageUpdateErr: errors.New("patch denied")}
 	run := fakeRun([]agentport.AgentEvent{
@@ -591,16 +722,17 @@ func (r *idleBlockingRun) Stop(context.Context) error {
 }
 
 type fakeChannel struct {
-	messages         []SendMessageRequest
-	cards            []SendCardRequest
-	updates          []UpdateCardRequest
-	messageUpdates   []UpdateMessageRequest
-	messageUpdateErr error
+	messages          []SendMessageRequest
+	cards             []SendCardRequest
+	updates           []UpdateCardRequest
+	messageUpdates    []UpdateMessageRequest
+	messageUpdateErr  error
+	messageUpdateErrs []error
 }
 
 func (c *fakeChannel) SendMessage(_ context.Context, req SendMessageRequest) (SendMessageResult, error) {
 	c.messages = append(c.messages, req)
-	return SendMessageResult{MessageID: "message-1"}, nil
+	return SendMessageResult{MessageID: fmt.Sprintf("message-%d", len(c.messages))}, nil
 }
 
 func (c *fakeChannel) SendCard(_ context.Context, req SendCardRequest) (SendCardResult, error) {
@@ -615,6 +747,11 @@ func (c *fakeChannel) UpdateCard(_ context.Context, req UpdateCardRequest) error
 
 func (c *fakeChannel) UpdateMessage(_ context.Context, req UpdateMessageRequest) error {
 	c.messageUpdates = append(c.messageUpdates, req)
+	if len(c.messageUpdateErrs) > 0 {
+		err := c.messageUpdateErrs[0]
+		c.messageUpdateErrs = c.messageUpdateErrs[1:]
+		return err
+	}
 	return c.messageUpdateErr
 }
 
