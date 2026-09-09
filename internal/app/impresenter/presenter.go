@@ -105,6 +105,10 @@ type Input struct {
 	DeferUntilDone    bool
 	FinalAnswerOnly   bool
 	BeforeFinal       func(context.Context, cardrender.RunState) error
+	// ResumeProgress restores ordinary progress rendering if a separate process
+	// presenter fails. OnResumeProgress runs once before the restored output.
+	ResumeProgress   <-chan struct{}
+	OnResumeProgress func(context.Context)
 }
 
 // CardRolloverPolicy controls when a streaming card continues in a new
@@ -121,20 +125,40 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 	var markdownUpdateFailed bool
 	lastCardUpdate := time.Time{}
 	lastMarkdownUpdate := time.Time{}
-	if normalizeReplyMode(input.ReplyMode) == ReplyCard && !input.DeferUntilDone {
-		result, err := sendCard(ctx, input, state)
-		if err != nil {
-			return state, err
+	startProgress := func() error {
+		if normalizeReplyMode(input.ReplyMode) == ReplyCard {
+			result, err := sendCard(ctx, input, state)
+			if err != nil {
+				return err
+			}
+			cardStream.markSent(result.MessageID)
+			lastCardUpdate = time.Now()
 		}
-		cardStream.markSent(result.MessageID)
-		lastCardUpdate = time.Now()
+		if normalizeReplyMode(input.ReplyMode) == ReplyMarkdown {
+			state = cardrender.Reduce(state, cardrender.Event{Type: cardrender.EventSystem})
+			if err := markdownStream.start(ctx, input, state); err != nil {
+				return err
+			}
+			lastMarkdownUpdate = time.Now()
+		}
+		return nil
 	}
-	if normalizeReplyMode(input.ReplyMode) == ReplyMarkdown && !input.DeferUntilDone {
-		state = cardrender.Reduce(state, cardrender.Event{Type: cardrender.EventSystem})
-		if err := markdownStream.start(ctx, input, state); err != nil {
+	if !input.DeferUntilDone {
+		if err := startProgress(); err != nil {
 			return state, err
 		}
-		lastMarkdownUpdate = time.Now()
+	}
+	resumeProgress := func(live bool) error {
+		input.ResumeProgress = nil
+		input.FinalAnswerOnly = false
+		if input.OnResumeProgress != nil {
+			input.OnResumeProgress(ctx)
+		}
+		if live && input.DeferUntilDone {
+			input.DeferUntilDone = false
+			return startProgress()
+		}
+		return nil
 	}
 	idleFired := false
 	if input.Run != nil {
@@ -176,6 +200,11 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 				idleFired = true
 				stopRunAfterIdle(input.Run)
 				goto done
+			case <-input.ResumeProgress:
+				if err := resumeProgress(true); err != nil {
+					stopIdleTimer()
+					return state, err
+				}
 			case event, ok := <-events:
 				if !ok {
 					goto done
@@ -216,6 +245,14 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 		if err := input.BeforeFinal(ctx, state); err != nil {
 			return state, err
 		}
+	}
+	// The process presenter may fail while flushing its final batch.
+	select {
+	case <-input.ResumeProgress:
+		if err := resumeProgress(false); err != nil {
+			return state, err
+		}
+	default:
 	}
 	finalCardState := state
 	if normalizeReplyMode(input.ReplyMode) == ReplyCard {

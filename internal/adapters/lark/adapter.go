@@ -3,6 +3,7 @@ package lark
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	appdispatch "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/carddispatch"
@@ -32,6 +33,10 @@ type AdapterOptions struct {
 }
 
 type Adapter struct {
+	lifecycleMu sync.Mutex
+	mu          sync.RWMutex
+	startCtx    context.Context
+
 	transport                  Transport
 	intake                     IntakeSink
 	cardActions                CardActionDispatcher
@@ -67,7 +72,7 @@ func NewAdapter(options AdapterOptions) (*Adapter, error) {
 		cardActions:                options.CardActions,
 		forwardCardPromptsToIntake: options.ForwardCardPromptsToIntake,
 		selfLoopPolicy:             options.SelfLoopPolicy,
-		useBotIdentityForSelfLoop:  useBotIdentity,
+		useBotIdentityForSelfLoop:  useBotIdentity && options.SelfLoopPolicy.BotOpenID == "",
 		profileProjection:          options.ProfileProjection,
 		now:                        options.Now,
 		managedCards:               cardmanaged.NewStore(),
@@ -78,12 +83,60 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if a == nil || a.transport == nil {
 		return ErrNilTransport
 	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if err := a.connect(ctx); err != nil {
+		return err
+	}
+	if starter, ok := a.intake.(interface {
+		Start(context.Context) error
+	}); ok {
+		if err := starter.Start(ctx); err != nil {
+			_ = a.transport.Disconnect(context.Background())
+			return err
+		}
+	}
+	a.startCtx = ctx
+	a.setStarted(true)
+	return nil
+}
+
+// Reconnect replaces the connection without closing or restarting the intake.
+func (a *Adapter) Reconnect(ctx context.Context) error {
+	if a == nil || a.transport == nil {
+		return ErrNilTransport
+	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if a.startCtx == nil {
+		return ErrAdapterNotStarted
+	}
+	if err := a.startCtx.Err(); err != nil {
+		return err
+	}
+	a.setStarted(false)
+	if err := a.transport.Disconnect(ctx); err != nil {
+		return err
+	}
+	// The command context can belong to the connection we just closed. Keep
+	// the replacement connection tied to the bridge's original lifetime.
+	if err := a.connect(a.startCtx); err != nil {
+		return err
+	}
+	a.setStarted(true)
+	return nil
+}
+
+func (a *Adapter) connect(ctx context.Context) error {
 	if err := a.transport.Connect(ctx, a); err != nil {
 		return err
 	}
-	connected := true
+	ready := false
 	defer func() {
-		if connected && !a.started {
+		if !ready {
 			_ = a.transport.Disconnect(context.Background())
 		}
 	}()
@@ -91,10 +144,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	a.botIdentity = identity
-	if a.useBotIdentityForSelfLoop && a.selfLoopPolicy.BotOpenID == "" && identity.OpenID != "" {
-		a.selfLoopPolicy.BotOpenID = identity.OpenID
-	}
+	var projection ProfileProjectionResult
 	if a.profileProjection != nil {
 		result, err := a.profileProjection.ProjectLarkProfile(ctx, ProfileProjectionRequest{
 			BotIdentity: identity,
@@ -103,17 +153,16 @@ func (a *Adapter) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		a.projectionResult = result
+		projection = result
 	}
-	if starter, ok := a.intake.(interface {
-		Start(context.Context) error
-	}); ok {
-		if err := starter.Start(ctx); err != nil {
-			return err
-		}
+	a.mu.Lock()
+	a.botIdentity = identity
+	if a.useBotIdentityForSelfLoop {
+		a.selfLoopPolicy.BotOpenID = identity.OpenID
 	}
-	a.started = true
-	connected = false
+	a.projectionResult = projection
+	a.mu.Unlock()
+	ready = true
 	return nil
 }
 
@@ -121,17 +170,23 @@ func (a *Adapter) Disconnect(ctx context.Context) error {
 	if a == nil || a.transport == nil {
 		return nil
 	}
-	a.started = false
+	a.lifecycleMu.Lock()
+	a.startCtx = nil
+	a.setStarted(false)
+	err := a.transport.Disconnect(ctx)
+	a.lifecycleMu.Unlock()
 	if closer, ok := a.intake.(interface{ Close() }); ok {
 		closer.Close()
 	}
-	return a.transport.Disconnect(ctx)
+	return err
 }
 
 func (a *Adapter) BotIdentity() BotIdentity {
 	if a == nil {
 		return BotIdentity{}
 	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.botIdentity
 }
 
@@ -139,11 +194,24 @@ func (a *Adapter) ProjectionResult() ProfileProjectionResult {
 	if a == nil {
 		return ProfileProjectionResult{}
 	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.projectionResult
 }
 
 func (a *Adapter) Started() bool {
-	return a != nil && a.started
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.started
+}
+
+func (a *Adapter) setStarted(started bool) {
+	a.mu.Lock()
+	a.started = started
+	a.mu.Unlock()
 }
 
 func (a *Adapter) HandleLarkTransportEvent(ctx context.Context, event IncomingEvent) error {
@@ -250,7 +318,10 @@ func (a *Adapter) ResolveCarrierThreadID(ctx context.Context, chatID, messageID 
 }
 
 func (a *Adapter) normalize(event IncomingEvent) (appintake.NormalizedEvent, error) {
-	normalizer := appintake.NewNormalizer(a.selfLoopPolicy)
+	a.mu.RLock()
+	policy := a.selfLoopPolicy
+	a.mu.RUnlock()
+	normalizer := appintake.NewNormalizer(policy)
 	switch event.Kind {
 	case appintake.EventMessage:
 		if event.Message == nil {

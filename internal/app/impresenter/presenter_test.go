@@ -353,6 +353,53 @@ func TestPresentCardModeCanDeferAndSendFinalAnswerOnly(t *testing.T) {
 	}
 }
 
+func TestPresentRestoresToolsWhenProcessFailsDuringFinalFlush(t *testing.T) {
+	for _, mode := range []ReplyMode{ReplyMarkdown, ReplyCard, ReplyText} {
+		t.Run(string(mode), func(t *testing.T) {
+			ch := &fakeChannel{}
+			resume := make(chan struct{})
+			resumed := 0
+			_, err := Present(context.Background(), Input{
+				Run: fakeRun([]agentport.AgentEvent{
+					toolUseEvent("tool-1", "Bash"),
+					toolResultEvent("tool-1", "tool output"),
+					textEvent("final answer"),
+					{Type: agentport.EventDone},
+				}),
+				Channel: ch, ChatID: "oc_chat", ReplyMode: mode,
+				DeferUntilDone: true, FinalAnswerOnly: true,
+				ResumeProgress:   resume,
+				OnResumeProgress: func(context.Context) { resumed++ },
+				BeforeFinal: func(context.Context, cardrender.RunState) error {
+					if len(ch.cards)+len(ch.messages) != 0 {
+						t.Fatal("output sent before final flush")
+					}
+					close(resume)
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("Present returned error: %v", err)
+			}
+			if resumed != 1 || len(ch.cards)+len(ch.messages) != 1 || len(ch.updates)+len(ch.messageUpdates) != 0 {
+				t.Fatalf("resume count=%d, outbound=%#v", resumed, ch)
+			}
+			body := ""
+			if mode == ReplyCard {
+				body = mustCardBody(ch.cards[0].Card)
+			} else {
+				body = ch.messages[0].Content.Markdown
+			}
+			if !strings.Contains(body, "Bash") || !strings.Contains(body, "final answer") {
+				t.Fatalf("final reply = %q", body)
+			}
+			if mode == ReplyCard && !strings.Contains(body, "tool output") {
+				t.Fatalf("final card lost tool output: %q", body)
+			}
+		})
+	}
+}
+
 func TestPresentMarkdownModeStreamsThrottledUpdates(t *testing.T) {
 	ch := &fakeChannel{}
 	run := delayedRun{

@@ -42,6 +42,7 @@ type Publisher struct {
 	ref            Ref
 	disabled       bool
 	degradedReason string
+	degraded       chan struct{}
 	buffer         []Event
 	timer          *time.Timer
 	flushing       bool
@@ -65,6 +66,7 @@ func NewPublisher(opts PublisherOptions) *Publisher {
 		inputPreview:    opts.InputPreview,
 		updateThrottle:  throttle,
 		now:             now,
+		degraded:        make(chan struct{}),
 	}
 }
 
@@ -78,11 +80,10 @@ func (p *Publisher) Start(ctx context.Context) bool {
 	})
 	if err != nil || ref.COTID == "" || ref.MessageID == "" {
 		p.mu.Lock()
-		p.disabled = true
 		if err != nil {
-			p.degradedReason = err.Error()
+			p.disableLocked(err.Error())
 		} else {
-			p.degradedReason = "CreateCOT missing ids"
+			p.disableLocked("CreateCOT missing ids")
 		}
 		p.mu.Unlock()
 		return false
@@ -112,6 +113,21 @@ func (p *Publisher) DegradedReason() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.degradedReason
+}
+
+// Degraded closes as soon as COT creation or an update fails.
+func (p *Publisher) Degraded() <-chan struct{} {
+	return p.degraded
+}
+
+func (p *Publisher) disableLocked(reason string) {
+	if p.disabled {
+		return
+	}
+	p.disabled = true
+	p.degradedReason = reason
+	p.buffer = nil
+	close(p.degraded)
 }
 
 func (p *Publisher) Enqueue(eventType string, content any) {
@@ -193,8 +209,7 @@ func (p *Publisher) Flush(ctx context.Context) error {
 		p.mu.Lock()
 		p.flushing = false
 		if err != nil {
-			p.disabled = true
-			p.degradedReason = err.Error()
+			p.disableLocked(err.Error())
 			p.mu.Unlock()
 			return err
 		}

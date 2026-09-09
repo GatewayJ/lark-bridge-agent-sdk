@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -649,9 +650,11 @@ func TestManagedLarkIntakePresentRunSendsCOTDegradedNoticeAndFinalReply(t *testi
 	transport.COTUpdateErr = errors.New("field validation failed")
 	intake := &managedLarkIntake{transport: transport, cotClient: wrapInternalLarkCOTClient(transport)}
 	text := "final answer"
+	toolID, toolName := "tool-1", "command_execution"
 
 	_, err := intake.presentRun(context.Background(), managedPresentInput{
 		Run: bridgeTestRun{events: []agentport.AgentEvent{
+			{Type: agentport.EventToolUse, ID: &toolID, Name: &toolName, Input: map[string]any{"command": "cat document"}},
 			{Type: agentport.EventText, Delta: &text},
 			{Type: agentport.EventDone, TerminationReason: agentport.TerminationNormal},
 		}},
@@ -674,11 +677,153 @@ func TestManagedLarkIntakePresentRunSendsCOTDegradedNoticeAndFinalReply(t *testi
 	if len(messages) != 2 {
 		t.Fatalf("sent messages = %#v, want degraded notice plus final reply", messages)
 	}
-	if !strings.Contains(messages[0].Content.Markdown, "COT 过程消息更新失败") {
+	if !strings.Contains(messages[0].Content.Markdown, "已恢复普通消息展示") {
 		t.Fatalf("degraded notice = %q", messages[0].Content.Markdown)
 	}
-	if !strings.Contains(messages[1].Content.Markdown, "final answer") {
-		t.Fatalf("final reply = %q", messages[1].Content.Markdown)
+	final := messages[1].Content.Markdown
+	if updates := transport.UpdatedMessageSnapshot(); len(updates) > 0 {
+		final = updates[len(updates)-1].Content.Markdown
+	}
+	if !strings.Contains(final, "final answer") || !strings.Contains(final, "cat document") {
+		t.Fatalf("final reply = %q", final)
+	}
+}
+
+func TestManagedLarkIntakePresentRunRestoresProgressDuringCOTFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		replyMode appimpresenter.ReplyMode
+		cotMode   appcot.Mode
+		hideTools bool
+	}{
+		{"markdown_brief", appimpresenter.ReplyMarkdown, appcot.ModeBrief, false},
+		{"card_detailed", appimpresenter.ReplyCard, appcot.ModeDetailed, false},
+		{"markdown_hidden", appimpresenter.ReplyMarkdown, appcot.ModeDetailed, true},
+		{"card_hidden", appimpresenter.ReplyCard, appcot.ModeBrief, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			transport := NewFakeLarkTransport(LarkBotIdentity{})
+			cotClient := &failAfterFirstCOTUpdate{Client: wrapInternalLarkCOTClient(transport), updated: make(chan struct{})}
+			diagnostics := make(chan error, 4)
+			intake := &managedLarkIntake{
+				transport: transport, cotClient: cotClient,
+				onError: func(_ context.Context, err error, fields map[string]any) {
+					if fields["phase"] == "cot.fallback" {
+						diagnostics <- err
+					}
+				},
+			}
+			events := make(chan agentport.AgentEvent, 4)
+			finished := make(chan error, 1)
+			go func() {
+				_, err := intake.presentRun(ctx, managedPresentInput{
+					Run: presenterEventRun{events: events}, ChatID: "oc_chat", RunID: "run-live",
+					ReplyMode: tc.replyMode, COTMessages: tc.cotMode, HideToolCalls: tc.hideTools,
+				})
+				finished <- err
+			}()
+			select {
+			case <-cotClient.updated:
+			case <-ctx.Done():
+				t.Fatal("COT did not receive its first update")
+			}
+			toolID, toolName := "tool-1", "command_execution"
+			events <- agentport.AgentEvent{Type: agentport.EventToolUse, ID: &toolID, Name: &toolName, Input: map[string]any{"command": "cat document"}}
+			waitForCondition(t, 2*time.Second, func() bool {
+				return len(transport.SentMessageSnapshot()) >= 2 || len(transport.SentCardSnapshot()) >= 1
+			})
+			progress, _ := json.Marshal([]any{transport.SentMessageSnapshot(), transport.SentCardSnapshot(), transport.UpdatedMessageSnapshot(), transport.UpdatedCardSnapshot()})
+			if strings.Contains(string(progress), "cat document") == tc.hideTools {
+				t.Fatalf("tool visibility before run completion = %s, hideTools = %v", progress, tc.hideTools)
+			}
+			select {
+			case err := <-diagnostics:
+				if !strings.Contains(err.Error(), "COT update rejected") {
+					t.Fatalf("diagnostic = %v", err)
+				}
+			default:
+				t.Fatal("missing COT failure diagnostic before run completion")
+			}
+			select {
+			case err := <-finished:
+				t.Fatalf("presenter ended before the run completed: %v", err)
+			default:
+			}
+			text := "final answer"
+			events <- agentport.AgentEvent{Type: agentport.EventToolResult, ID: &toolID}
+			events <- agentport.AgentEvent{Type: agentport.EventText, Delta: &text}
+			events <- agentport.AgentEvent{Type: agentport.EventDone, TerminationReason: agentport.TerminationNormal}
+			close(events)
+			select {
+			case err := <-finished:
+				if err != nil {
+					t.Fatalf("presentRun returned error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("presenter did not finish")
+			}
+			final, _ := json.Marshal([]any{transport.UpdatedMessageSnapshot(), transport.UpdatedCardSnapshot()})
+			if strings.Count(string(final), "final answer") != 1 {
+				t.Fatalf("final answer not delivered exactly once: %s", final)
+			}
+			if strings.Contains(string(final), "cat document") == tc.hideTools {
+				t.Fatalf("final tool visibility = %s, hideTools = %v", final, tc.hideTools)
+			}
+			if len(transport.CompletedCOTSnapshot()) != 0 {
+				t.Fatal("completed a failed COT")
+			}
+			notices := 0
+			for _, message := range transport.SentMessageSnapshot() {
+				if strings.Contains(message.Content.Markdown, "已恢复普通消息展示") {
+					notices++
+				}
+			}
+			if notices != 1 {
+				t.Fatalf("fallback notices = %d, want 1", notices)
+			}
+		})
+	}
+}
+
+type failAfterFirstCOTUpdate struct {
+	appcot.Client
+	updated chan struct{}
+}
+
+func (c *failAfterFirstCOTUpdate) UpdateMessageCOT(ctx context.Context, req appcot.UpdateRequest) error {
+	select {
+	case <-c.updated:
+		return errors.New("COT update rejected")
+	default:
+		if err := c.Client.UpdateMessageCOT(ctx, req); err != nil {
+			return err
+		}
+		close(c.updated)
+		return nil
+	}
+}
+
+func TestManagedLarkIntakeCOTCreateFailureRestoresOrdinaryReply(t *testing.T) {
+	transport := NewFakeLarkTransport(LarkBotIdentity{})
+	transport.COTCreateErr = errors.New("permission denied")
+	intake := &managedLarkIntake{transport: transport, cotClient: wrapInternalLarkCOTClient(transport)}
+	toolID, toolName, text := "tool-1", "command_execution", "final answer"
+	_, err := intake.presentRun(context.Background(), managedPresentInput{
+		Run: bridgeTestRun{events: []agentport.AgentEvent{
+			{Type: agentport.EventToolUse, ID: &toolID, Name: &toolName, Input: map[string]any{"command": "cat document"}},
+			{Type: agentport.EventText, Delta: &text},
+			{Type: agentport.EventDone},
+		}},
+		ChatID: "oc_chat", ReplyMode: appimpresenter.ReplyText, COTMessages: appcot.ModeBrief,
+	})
+	if err != nil {
+		t.Fatalf("presentRun returned error: %v", err)
+	}
+	messages := transport.SentMessageSnapshot()
+	if len(messages) != 2 || !strings.Contains(messages[0].Content.Markdown, "已恢复普通消息展示") || !strings.Contains(messages[1].Content.Markdown, "cat document") || !strings.Contains(messages[1].Content.Markdown, "final answer") {
+		t.Fatalf("fallback messages = %#v", messages)
 	}
 }
 

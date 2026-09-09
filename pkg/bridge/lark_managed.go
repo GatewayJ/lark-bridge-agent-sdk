@@ -913,7 +913,15 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 		Scope:           input.ScopeID,
 		InputPreview:    input.InputPreview,
 	})
+	notifyFallback := func(ctx context.Context) {
+		fields := map[string]any{"phase": "cot.fallback", "chatId": input.ChatID, "runId": input.RunID}
+		i.recordError(ctx, fmt.Errorf("COT process messages unavailable: %s", publisher.DegradedReason()), fields)
+		if err := i.sendMarkdown(ctx, input.ChatID, "COT 过程消息不可用，已恢复普通消息展示。", fromPresenterSendOptions(input.Options)); err != nil {
+			i.recordError(ctx, err, map[string]any{"phase": "cot.fallback_notice", "chatId": input.ChatID, "runId": input.RunID})
+		}
+	}
 	if !publisher.Start(ctx) {
+		notifyFallback(ctx)
 		return appimpresenter.Present(ctx, appimpresenter.Input{
 			Run:           input.Run,
 			Channel:       channel,
@@ -935,25 +943,24 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 		_ = appcot.ConsumeEvents(fanoutCtx, cotEvents, publisher, input.COTMessages)
 	}()
 	state, err := appimpresenter.Present(ctx, appimpresenter.Input{
-		Run:             presenterEventRun{events: presenterEvents, stopper: input.Run},
-		Channel:         channel,
-		ChatID:          input.ChatID,
-		Options:         input.Options,
-		ReplyMode:       input.ReplyMode,
-		HideToolCalls:   input.HideToolCalls,
-		CardRollover:    i.cardRollover,
-		IdleTimeout:     input.IdleTimeout,
-		DeferUntilDone:  true,
-		FinalAnswerOnly: true,
-		RenderOptions:   input.RenderOptions,
+		Run:              presenterEventRun{events: presenterEvents, stopper: input.Run},
+		Channel:          channel,
+		ChatID:           input.ChatID,
+		Options:          input.Options,
+		ReplyMode:        input.ReplyMode,
+		HideToolCalls:    input.HideToolCalls,
+		CardRollover:     i.cardRollover,
+		IdleTimeout:      input.IdleTimeout,
+		DeferUntilDone:   true,
+		FinalAnswerOnly:  true,
+		RenderOptions:    input.RenderOptions,
+		ResumeProgress:   publisher.Degraded(),
+		OnResumeProgress: notifyFallback,
 		BeforeFinal: func(ctx context.Context, _ appcardrender.RunState) error {
 			select {
 			case <-cotDone:
 			case <-ctx.Done():
 				return ctx.Err()
-			}
-			if reason := publisher.DegradedReason(); reason != "" {
-				return i.sendMarkdown(ctx, input.ChatID, "COT 过程消息更新失败，已停止展示过程；最终答案仍会继续发送。", fromPresenterSendOptions(input.Options))
 			}
 			return nil
 		},
@@ -1268,6 +1275,10 @@ func managedCardActionMessage(input CardActionDispatchInput, scope appintake.Sco
 }
 
 func (i *managedLarkIntake) sendCommandResponse(ctx context.Context, msg appintake.MessageInput, scope appintake.Scope, response CommandResponse) error {
+	if response.Kind == CommandResponseReconnect {
+		// Closing the old connection cancels the incoming command context.
+		ctx = context.WithoutCancel(ctx)
+	}
 	if i.shouldSendAccountRetryForm(msg, response) {
 		return i.sendAccountFailureRetryForm(ctx, msg, scope, response.Account)
 	}

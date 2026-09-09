@@ -296,6 +296,9 @@ func (c *Coordinator) Reconnect(ctx context.Context, opts ReconnectOptions) erro
 	if !ok {
 		return errors.New("runtime handle does not support reconnect")
 	}
+	if opts.Tenant == "" {
+		opts.Tenant = entry.Tenant
+	}
 	opts.Tenant = normalizeTenant(opts.Tenant)
 	if opts.AppID == "" {
 		opts.AppID = entry.AppID

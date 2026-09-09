@@ -12,16 +12,17 @@ import (
 )
 
 var (
-	ErrNilBridge                  = errors.New("bridge is nil")
-	ErrBridgeAlreadyStarted       = errors.New("bridge already started")
-	ErrBridgeStartUnsupported     = errors.New("bridge start requires an injected agent client, lark transport, lark adapter, or runtime adapter")
-	ErrBridgeStartMissingAppID    = errors.New("bridge start with lark/runtime adapter requires appID")
-	ErrBridgeAmbiguousAgentClient = errors.New("bridge options must provide only one of Client, CodexClient, or ClaudeClient")
-	ErrBridgeAmbiguousLarkRuntime = errors.New("bridge options must provide only one of LarkTransport, LarkAdapter, or RuntimeAdapter")
-	ErrBridgeLarkIntakeRequired   = errors.New("bridge options with LarkTransport require LarkIntake; use NewLarkAdapter for send-only/custom wiring")
-	ErrBridgeCommentSurface       = errors.New("bridge managed lark comments require a comment surface")
-	ErrBridgeReconnectUnsupported = errors.New("bridge reconnect requires a runtime adapter")
-	ErrBridgeShutdownInProgress   = errors.New("bridge shutdown already in progress")
+	ErrNilBridge                    = errors.New("bridge is nil")
+	ErrBridgeAlreadyStarted         = errors.New("bridge already started")
+	ErrBridgeStartUnsupported       = errors.New("bridge start requires an injected agent client, lark transport, lark adapter, or runtime adapter")
+	ErrBridgeStartMissingAppID      = errors.New("bridge start with lark/runtime adapter requires appID")
+	ErrBridgeAmbiguousAgentClient   = errors.New("bridge options must provide only one of Client, CodexClient, or ClaudeClient")
+	ErrBridgeAmbiguousLarkRuntime   = errors.New("bridge options must provide only one of LarkTransport, LarkAdapter, or RuntimeAdapter")
+	ErrBridgeLarkIntakeRequired     = errors.New("bridge options with LarkTransport require LarkIntake; use NewLarkAdapter for send-only/custom wiring")
+	ErrBridgeCommentSurface         = errors.New("bridge managed lark comments require a comment surface")
+	ErrBridgeReconnectUnsupported   = errors.New("bridge reconnect requires a runtime adapter")
+	ErrBridgeReconnectConfigChanged = errors.New("lark reconnect cannot change app ID, tenant, or config path; restart the bridge with the updated configuration")
+	ErrBridgeShutdownInProgress     = errors.New("bridge shutdown already in progress")
 )
 
 type Bridge struct {
@@ -457,18 +458,31 @@ type larkRuntimeAdapter struct {
 	adapter *LarkAdapter
 }
 
-func (a larkRuntimeAdapter) Start(ctx context.Context, _ RuntimeStartRequest) (RuntimeHandle, error) {
+func (a larkRuntimeAdapter) Start(ctx context.Context, req RuntimeStartRequest) (RuntimeHandle, error) {
 	if a.adapter == nil {
 		return nil, ErrNilLarkTransport
 	}
 	if err := a.adapter.Start(ctx); err != nil {
 		return nil, err
 	}
-	return larkRuntimeHandle{adapter: a.adapter}, nil
+	return larkRuntimeHandle{adapter: a.adapter, request: req}, nil
 }
 
 type larkRuntimeHandle struct {
 	adapter *LarkAdapter
+	request RuntimeStartRequest
+}
+
+var _ RuntimeReconnecter = larkRuntimeHandle{}
+
+func (h larkRuntimeHandle) Reconnect(ctx context.Context, req RuntimeReconnectRequest) error {
+	if h.adapter == nil {
+		return ErrNilLarkTransport
+	}
+	if req.AppID != h.request.AppID || req.Tenant != h.request.Tenant || req.ConfigPath != h.request.ConfigPath {
+		return ErrBridgeReconnectConfigChanged
+	}
+	return h.adapter.Reconnect(ctx)
 }
 
 func (h larkRuntimeHandle) Shutdown(ctx context.Context) error {

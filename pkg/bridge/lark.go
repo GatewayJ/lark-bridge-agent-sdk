@@ -416,6 +416,15 @@ func (a *LarkAdapter) Disconnect(ctx context.Context) error {
 	return a.inner.Disconnect(ctx)
 }
 
+// Reconnect refreshes the connection using the original Start context and
+// credentials, preserving the intake and its queued messages.
+func (a *LarkAdapter) Reconnect(ctx context.Context) error {
+	if a == nil || a.inner == nil {
+		return ErrNilLarkTransport
+	}
+	return fromInternalLarkError(a.inner.Reconnect(ctx))
+}
+
 func (a *LarkAdapter) BotIdentity() LarkBotIdentity {
 	if a == nil || a.inner == nil {
 		return LarkBotIdentity{}

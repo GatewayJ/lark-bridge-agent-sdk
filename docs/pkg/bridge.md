@@ -159,12 +159,26 @@ intake. The managed path covers:
   `LarkManagedOptions.CardRollover`, with serialized-byte and successful-update
   limits and continuation cards containing only unpublished output;
 - optional COT process messages through `LarkCOTClient`, followed by a separate
-  final-answer reply;
+  final-answer reply; creation or update failures are logged and restore ordinary
+  progress rendering immediately, respecting the configured tool visibility;
 - best-effort `Typing` reactions for non-card reply modes when reactions are
   supported.
 
 `ProfileBridgeOptions.LogDir` overrides the default
 `<Home>/profiles/<Profile>/logs` JSONL log directory.
+
+`NewProfileBridge` wires `/reconnect` and `/reconnect --wait` to the built-in
+Lark runtime. Hosts can also call `instance.Reconnect(ctx,
+RuntimeReconnectOptions{})` directly. Reconnect refreshes the connection and
+bot identity while preserving the intake queue; the new connection uses the
+original `Start` context and credentials. The default OAPI transport creates
+a fresh WebSocket client so automatic recovery remains enabled.
+
+Changing the app ID, tenant, or config path requires restarting the built-in
+bridge with the updated configuration; reconnect returns
+`ErrBridgeReconnectConfigChanged` before disconnecting in these cases. A custom
+`RuntimeAdapter` can implement `RuntimeReconnecter` to support configuration
+changes itself.
 
 ## Managed Commands And Account Forms
 

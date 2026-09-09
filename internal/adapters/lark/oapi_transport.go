@@ -22,6 +22,7 @@ import (
 	larkchannel "github.com/larksuite/oapi-sdk-go/v3/channel"
 	larknormalize "github.com/larksuite/oapi-sdk-go/v3/channel/normalize"
 	"github.com/larksuite/oapi-sdk-go/v3/channel/outbound"
+	larksafety "github.com/larksuite/oapi-sdk-go/v3/channel/safety"
 	channeltypes "github.com/larksuite/oapi-sdk-go/v3/channel/types"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkdispatcher "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
@@ -102,11 +103,15 @@ type OAPITransportOptions struct {
 }
 
 type OAPITransport struct {
-	mu sync.Mutex
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
 
 	client       *larksdk.Client
 	wsClient     *larkws.Client
 	channel      oapiChannel
+	newChannel   func() (oapiChannel, *larkws.Client)
+	generation   uint64
+	messageDedup *larksafety.DedupCache
 	requestTTL   time.Duration
 	startTimeout time.Duration
 	startCancel  context.CancelFunc
@@ -142,6 +147,8 @@ func NewOAPITransport(options OAPITransportOptions) (*OAPITransport, error) {
 	client := options.Client
 	wsClient := options.WSClient
 	channel := options.channel
+	channelConfig := defaultOAPIChannelConfig(options)
+	var newChannel func() (oapiChannel, *larkws.Client)
 	if channel == nil {
 		if client == nil {
 			if !hasOAPICredentials(options) {
@@ -158,8 +165,15 @@ func NewOAPITransport(options OAPITransportOptions) (*OAPITransport, error) {
 		if !options.DisableWebSocket && wsClient != nil && wsClient.EventHandler() == nil {
 			return nil, ErrOAPIEventDispatcher
 		}
-		channelConfig := defaultOAPIChannelConfig(options)
 		channel = larkchannel.NewChannel(client, wsClient, oapiChannelOptions(channelConfig)...)
+		if !options.DisableWebSocket && options.WSClient == nil {
+			// SDK Close disables automatic reconnect permanently. Each later
+			// connection needs a fresh client and event dispatcher.
+			newChannel = func() (oapiChannel, *larkws.Client) {
+				socket := newOAPIWSClient(options)
+				return larkchannel.NewChannel(client, socket, oapiChannelOptions(channelConfig)...), socket
+			}
+		}
 	}
 	if channel == nil {
 		return nil, ErrOAPIChannel
@@ -180,6 +194,8 @@ func NewOAPITransport(options OAPITransportOptions) (*OAPITransport, error) {
 		client:        client,
 		wsClient:      wsClient,
 		channel:       channel,
+		newChannel:    newChannel,
+		messageDedup:  larksafety.NewDedupCache(channelConfig.Safety.Dedup.MaxEntries, channelConfig.Safety.Dedup.SweepIntervalMs),
 		requestTTL:    requestTTL,
 		startTimeout:  startTimeout,
 		now:           now,
@@ -297,21 +313,35 @@ func hasOAPICredentials(options OAPITransportOptions) bool {
 }
 
 func (t *OAPITransport) Connect(ctx context.Context, handler TransportHandler) error {
-	if t == nil || t.channel == nil {
+	if t == nil {
 		return ErrOAPIChannel
 	}
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
 	if handler == nil {
 		return ErrNilTransport
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	ready := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	startCtx, cancel := context.WithCancel(ctx)
 
 	t.mu.Lock()
+	if t.channel == nil {
+		t.mu.Unlock()
+		cancel()
+		return ErrOAPIChannel
+	}
 	if t.started {
 		t.mu.Unlock()
 		cancel()
 		return ErrOAPIAlreadyStarted
+	}
+	if t.registered && t.newChannel != nil {
+		t.channel, t.wsClient = t.newChannel()
+		t.registered = false
 	}
 	t.started = true
 	t.handler = handler
@@ -319,19 +349,24 @@ func (t *OAPITransport) Connect(ctx context.Context, handler TransportHandler) e
 	t.startCancel = cancel
 	t.ready = ready
 	if !t.registered {
+		t.generation++
 		t.registerCallbacks()
 		t.registered = true
 	}
+	channel := t.channel
+	wsClient := t.wsClient
 	t.mu.Unlock()
 
 	go func() {
-		err := t.channel.Start(startCtx)
+		err := channel.Start(startCtx)
 		done <- err
 	}()
 
-	if t.wsClient == nil {
+	if wsClient == nil {
 		err := <-done
 		if err != nil {
+			cancel()
+			_ = channel.Stop(context.Background())
 			t.resetFailedStart()
 		}
 		return err
@@ -346,6 +381,8 @@ func (t *OAPITransport) Connect(ctx context.Context, handler TransportHandler) e
 	select {
 	case err := <-done:
 		if err != nil {
+			cancel()
+			_ = channel.Stop(context.Background())
 			t.resetFailedStart()
 		}
 		return err
@@ -353,21 +390,23 @@ func (t *OAPITransport) Connect(ctx context.Context, handler TransportHandler) e
 		return nil
 	case <-timer.C:
 		cancel()
-		_ = t.channel.Stop(context.Background())
+		_ = channel.Stop(context.Background())
 		t.resetFailedStart()
 		return ErrOAPIStartTimeout
 	case <-ctx.Done():
 		cancel()
-		_ = t.channel.Stop(context.Background())
+		_ = channel.Stop(context.Background())
 		t.resetFailedStart()
 		return ctx.Err()
 	}
 }
 
 func (t *OAPITransport) Disconnect(ctx context.Context) error {
-	if t == nil || t.channel == nil {
+	if t == nil {
 		return nil
 	}
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
 	t.mu.Lock()
 	if t.startCancel != nil {
 		t.startCancel()
@@ -377,15 +416,20 @@ func (t *OAPITransport) Disconnect(ctx context.Context) error {
 	t.connected = false
 	t.started = false
 	t.handler = nil
+	channel := t.channel
 	t.mu.Unlock()
-	return t.channel.Stop(ctx)
+	if channel == nil {
+		return nil
+	}
+	return channel.Stop(ctx)
 }
 
 func (t *OAPITransport) BotIdentity(ctx context.Context) (BotIdentity, error) {
-	if t == nil || t.channel == nil {
+	channel := t.currentChannel()
+	if channel == nil {
 		return BotIdentity{}, ErrOAPIChannel
 	}
-	identity := t.channel.GetBotIdentity(ctx)
+	identity := channel.GetBotIdentity(ctx)
 	if identity == nil {
 		return BotIdentity{}, nil
 	}
@@ -437,7 +481,8 @@ func (t *OAPITransport) CreateBoundChat(ctx context.Context, req CreateBoundChat
 }
 
 func (t *OAPITransport) SendMessage(ctx context.Context, req SendMessageRequest) (SendResult, error) {
-	if t == nil || t.channel == nil {
+	channel := t.currentChannel()
+	if channel == nil {
 		return SendResult{}, ErrOAPIChannel
 	}
 	if err := validateThreadSend(req.Options); err != nil {
@@ -454,7 +499,7 @@ func (t *OAPITransport) SendMessage(ctx context.Context, req SendMessageRequest)
 	if err != nil {
 		return SendResult{}, err
 	}
-	result, err := t.channel.Send(ctx, input)
+	result, err := channel.Send(ctx, input)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -462,7 +507,8 @@ func (t *OAPITransport) SendMessage(ctx context.Context, req SendMessageRequest)
 }
 
 func (t *OAPITransport) SendCard(ctx context.Context, req SendCardRequest) (SendResult, error) {
-	if t == nil || t.channel == nil {
+	channel := t.currentChannel()
+	if channel == nil {
 		return SendResult{}, ErrOAPIChannel
 	}
 	cardJSON, err := marshalCard(req.Card)
@@ -475,7 +521,7 @@ func (t *OAPITransport) SendCard(ctx context.Context, req SendCardRequest) (Send
 	if req.Options.ReplyInThread {
 		return t.sendDirect(ctx, req.ChatID, "interactive", cardJSON, req.Options)
 	}
-	result, err := t.channel.Send(ctx, &channeltypes.SendInput{
+	result, err := channel.Send(ctx, &channeltypes.SendInput{
 		ReceiveID:      req.ChatID,
 		Card:           cardJSON,
 		ReplyMessageID: req.Options.ReplyTo,
@@ -685,7 +731,8 @@ func (t *OAPITransport) CreateCard(ctx context.Context, card map[string]any) (st
 }
 
 func (t *OAPITransport) SendCardID(ctx context.Context, recipientID string, cardID string, opts cardmanaged.SendOptions) (string, error) {
-	if t == nil || t.channel == nil {
+	channel := t.currentChannel()
+	if channel == nil {
 		return "", ErrOAPIChannel
 	}
 	content, err := json.Marshal(map[string]string{"card_id": cardID})
@@ -703,7 +750,7 @@ func (t *OAPITransport) SendCardID(ctx context.Context, recipientID string, card
 		result, err := t.sendDirect(ctx, recipientID, "interactive", string(content), sendOpts)
 		return result.MessageID, err
 	}
-	result, err := t.channel.Send(ctx, &channeltypes.SendInput{
+	result, err := channel.Send(ctx, &channeltypes.SendInput{
 		ReceiveID:      recipientID,
 		Card:           string(content),
 		ReplyMessageID: opts.ReplyTo,
@@ -1252,8 +1299,12 @@ func escapeOAPIQuoteAttr(value string) string {
 }
 
 func (t *OAPITransport) registerCallbacks() {
+	generation := t.generation
+	emit := func(ctx context.Context, event IncomingEvent) error {
+		return t.emit(ctx, generation, event)
+	}
 	t.channel.OnMessage(func(ctx context.Context, msg *channeltypes.NormalizedMessage) error {
-		return t.emit(ctx, IncomingEvent{
+		return emit(ctx, IncomingEvent{
 			Kind:    appintake.EventMessage,
 			Raw:     msg.RawEvent,
 			Message: t.mapMessage(msg),
@@ -1263,7 +1314,7 @@ func (t *OAPITransport) registerCallbacks() {
 		return nil
 	})
 	t.channel.OnComment(func(ctx context.Context, event *channeltypes.CommentEvent) error {
-		return t.emit(ctx, IncomingEvent{
+		return emit(ctx, IncomingEvent{
 			Kind:    appintake.EventComment,
 			Raw:     event.RawEvent,
 			Comment: mapComment(event),
@@ -1271,17 +1322,17 @@ func (t *OAPITransport) registerCallbacks() {
 	})
 	t.channel.OnCardAction(func(ctx context.Context, event *channeltypes.CardActionEvent) error {
 		input := t.mapCardAction(ctx, event)
-		return t.emit(ctx, IncomingEvent{
+		return emit(ctx, IncomingEvent{
 			Kind:       appintake.EventCardAction,
 			Raw:        event.RawEvent,
 			CardAction: input,
 		})
 	})
 	t.channel.OnReady(func() {
-		t.signalReady()
+		t.signalReady(generation)
 	})
 	t.channel.OnError(func(err error) {
-		_ = t.emit(context.Background(), IncomingEvent{
+		_ = emit(context.Background(), IncomingEvent{
 			Kind: appintake.EventDisconnect,
 			Disconnect: &appintake.DisconnectInput{
 				Reason: err.Error(),
@@ -1290,7 +1341,7 @@ func (t *OAPITransport) registerCallbacks() {
 		})
 	})
 	t.channel.OnReconnecting(func() {
-		_ = t.emit(context.Background(), IncomingEvent{
+		_ = emit(context.Background(), IncomingEvent{
 			Kind: appintake.EventReconnect,
 			Reconnect: &appintake.ReconnectInput{
 				Phase: appintake.ReconnectReconnecting,
@@ -1299,7 +1350,7 @@ func (t *OAPITransport) registerCallbacks() {
 		})
 	})
 	t.channel.OnReconnected(func() {
-		_ = t.emit(context.Background(), IncomingEvent{
+		_ = emit(context.Background(), IncomingEvent{
 			Kind: appintake.EventReconnect,
 			Reconnect: &appintake.ReconnectInput{
 				Phase: appintake.ReconnectRecovered,
@@ -1308,7 +1359,7 @@ func (t *OAPITransport) registerCallbacks() {
 		})
 	})
 	t.channel.OnDisconnected(func() {
-		_ = t.emit(context.Background(), IncomingEvent{
+		_ = emit(context.Background(), IncomingEvent{
 			Kind: appintake.EventDisconnect,
 			Disconnect: &appintake.DisconnectInput{
 				Reason: "disconnected",
@@ -1318,20 +1369,39 @@ func (t *OAPITransport) registerCallbacks() {
 	})
 }
 
-func (t *OAPITransport) emit(ctx context.Context, event IncomingEvent) error {
-	t.mu.Lock()
-	handler := t.handler
-	connected := t.connected
-	t.mu.Unlock()
-	if !connected || handler == nil {
+func (t *OAPITransport) currentChannel() oapiChannel {
+	if t == nil {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.channel
+}
+
+func (t *OAPITransport) emit(ctx context.Context, generation uint64, event IncomingEvent) error {
+	t.mu.Lock()
+	handler := t.handler
+	connected := t.connected && t.generation == generation
+	if !connected || handler == nil {
+		t.mu.Unlock()
+		return nil
+	}
+	// The new SDK channel has an empty dedup cache. Keep message IDs across
+	// replacements so a redelivered /reconnect cannot restart us repeatedly.
+	if event.Message != nil && t.messageDedup != nil && t.messageDedup.IsDuplicate(event.Message.MessageID) {
+		t.mu.Unlock()
+		return nil
+	}
+	t.mu.Unlock()
 	return handler.HandleLarkTransportEvent(ctx, event)
 }
 
-func (t *OAPITransport) signalReady() {
+func (t *OAPITransport) signalReady(generation uint64) {
 	t.mu.Lock()
 	ready := t.ready
+	if t.generation != generation {
+		ready = nil
+	}
 	t.mu.Unlock()
 	if ready == nil {
 		return

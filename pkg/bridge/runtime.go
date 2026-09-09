@@ -250,6 +250,9 @@ func (r *Runtime) Reconnect(ctx context.Context, options RuntimeReconnectOptions
 	if err != nil {
 		return err
 	}
+	if options.Tenant == "" {
+		tenant = ""
+	}
 	return toPublicRuntimeError(r.coord.Reconnect(ctx, runtimecoord.ReconnectOptions{
 		AppID:      options.AppID,
 		Tenant:     tenant,

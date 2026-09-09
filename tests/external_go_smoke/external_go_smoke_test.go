@@ -224,6 +224,12 @@ func TestBridgePublicAPICompiles(t *testing.T) {
 	if err := instance.Start(context.Background()); err != nil {
 		t.Fatalf("Bridge.Start returned error: %v", err)
 	}
+	if err := instance.Reconnect(context.Background(), bridge.RuntimeReconnectOptions{}); err != nil {
+		t.Fatalf("Bridge.Reconnect returned error: %v", err)
+	}
+	if err := instance.Reconnect(context.Background(), bridge.RuntimeReconnectOptions{AppID: "cli_other"}); !errors.Is(err, bridge.ErrBridgeReconnectConfigChanged) {
+		t.Fatalf("Bridge.Reconnect with changed app error = %v", err)
+	}
 	if err := instance.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Bridge.Shutdown returned error: %v", err)
 	}
