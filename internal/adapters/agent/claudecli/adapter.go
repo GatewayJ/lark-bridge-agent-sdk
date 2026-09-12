@@ -15,6 +15,7 @@ import (
 	"time"
 
 	agentpreflight "github.com/GatewayJ/lark-bridge-agent-sdk/internal/adapters/agent/preflight"
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/agentoutput"
 	agentport "github.com/GatewayJ/lark-bridge-agent-sdk/internal/ports/agent"
 	promptport "github.com/GatewayJ/lark-bridge-agent-sdk/internal/presentation/prompt"
 )
@@ -322,6 +323,8 @@ func (r *processRun) stream(stdout io.Reader) {
 	defer close(r.done)
 
 	translator := NewStreamTranslator()
+	output := &agentoutput.Stream{}
+	var terminal *agentport.AgentEvent
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerToken)
 	for scanner.Scan() {
@@ -333,7 +336,13 @@ func (r *processRun) stream(stdout io.Reader) {
 		if err != nil {
 			continue
 		}
-		r.emit(events)
+		for _, event := range events {
+			if event.Type == agentport.EventDone || event.Type == agentport.EventError {
+				terminal = &event
+				continue
+			}
+			r.emit(output.Push(event))
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		r.setRuntimeError(fmt.Errorf("claude stdout read error: %w", err))
@@ -342,21 +351,25 @@ func (r *processRun) stream(stdout io.Reader) {
 	exitCode := r.waitProcess()
 	<-r.stderrDone
 	if reason := r.getStopReason(); reason != "" {
-		r.emit(translator.Finish(reason))
-		return
+		stop := doneEvent(translator.sessionID, agentport.TerminationInterrupted)
+		if reason == ClaudeFinishTimeout {
+			stop.TerminationReason = agentport.TerminationTimeout
+		}
+		terminal = &stop
+	} else if runtimeErr := r.getRuntimeError(); runtimeErr != nil {
+		failure := terminalError(fmt.Sprintf("claude runtime error: %s", runtimeErr.Error()))
+		terminal = &failure
+	} else if exitCode != 0 && (terminal == nil || terminal.Type != agentport.EventError) {
+		failure := terminalExitError("claude", exitCode, r.stderrDetail())
+		terminal = &failure
 	}
-	if runtimeErr := r.getRuntimeError(); runtimeErr != nil && exitCode == -1 {
-		r.emit([]agentport.AgentEvent{terminalError(fmt.Sprintf("claude runtime error: %s", runtimeErr.Error()))})
-		return
+	if terminal == nil {
+		failure := terminalError("claude stream ended before a terminal result")
+		terminal = &failure
 	}
-	if exitCode != 0 {
-		r.emit([]agentport.AgentEvent{terminalExitError("claude", exitCode, r.stderrDetail())})
-		return
-	}
-	if runtimeErr := r.getRuntimeError(); runtimeErr != nil {
-		r.emit([]agentport.AgentEvent{terminalError(fmt.Sprintf("claude runtime error: %s", runtimeErr.Error()))})
-		return
-	}
+	success := terminal.Type == agentport.EventDone && (terminal.TerminationReason == "" || terminal.TerminationReason == agentport.TerminationNormal)
+	r.emit(output.Finish(nil, success))
+	r.emit([]agentport.AgentEvent{*terminal})
 }
 
 func (r *processRun) waitProcess() int {

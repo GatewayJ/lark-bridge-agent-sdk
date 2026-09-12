@@ -225,10 +225,17 @@ func TestPresentCardModeSplitsOversizedDeferredFinalAnswer(t *testing.T) {
 	state = cardrender.Reduce(state, toCardEvent(agentport.AgentEvent{Type: agentport.EventDone}))
 	limit := serializedCardSize(t, renderContinuationCard(input, state))
 	output := strings.Repeat("z", 1200)
+	progress := textEvent(strings.Repeat("progress", 600))
+	progress.Phase = agentport.TextCommentary
+	final := textEvent(output)
+	final.Phase = agentport.TextFinalAnswer
 
 	ch := &fakeChannel{}
 	input.Run = fakeRun([]agentport.AgentEvent{
-		textEvent(output),
+		progress,
+		toolUseEvent("calendar", "calendar"),
+		toolResultEvent("calendar", "ok"),
+		final,
 		{Type: agentport.EventDone},
 	})
 	input.Channel = ch

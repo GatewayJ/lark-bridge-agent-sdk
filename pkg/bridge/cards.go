@@ -78,6 +78,8 @@ type RunCardToolEntry struct {
 
 type RunCardBlock struct {
 	Kind      RunCardBlockKind  `json:"kind"`
+	Phase     TextPhase         `json:"phase,omitempty"`
+	ID        string            `json:"id,omitempty"`
 	Content   string            `json:"content,omitempty"`
 	Streaming bool              `json:"streaming,omitempty"`
 	Tool      *RunCardToolEntry `json:"tool,omitempty"`
@@ -272,6 +274,7 @@ func toCardEvent(event Event) cardrender.Event {
 		CWD:                   event.CWD,
 		Model:                 event.Model,
 		Delta:                 event.Delta,
+		Phase:                 cardrender.TextPhase(event.Phase),
 		ID:                    event.ID,
 		Name:                  event.Name,
 		Input:                 event.Input,
@@ -359,6 +362,8 @@ func toInternalRunCardBlocks(blocks []RunCardBlock) []cardrender.Block {
 	for _, block := range blocks {
 		out = append(out, cardrender.Block{
 			Kind:      cardrender.BlockKind(block.Kind),
+			Phase:     cardrender.TextPhase(block.Phase),
+			ID:        block.ID,
 			Content:   block.Content,
 			Streaming: block.Streaming,
 			Tool:      toInternalRunCardTool(block.Tool),
@@ -375,6 +380,8 @@ func fromInternalRunCardBlocks(blocks []cardrender.Block) []RunCardBlock {
 	for _, block := range blocks {
 		out = append(out, RunCardBlock{
 			Kind:      RunCardBlockKind(block.Kind),
+			Phase:     TextPhase(block.Phase),
+			ID:        block.ID,
 			Content:   block.Content,
 			Streaming: block.Streaming,
 			Tool:      fromInternalRunCardTool(block.Tool),

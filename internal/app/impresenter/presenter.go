@@ -2,6 +2,7 @@ package impresenter
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -104,6 +105,8 @@ type Input struct {
 	IdleTimeout       time.Duration
 	DeferUntilDone    bool
 	FinalAnswerOnly   bool
+	PrivateChat       bool
+	OnUserActionError func(context.Context, error)
 	BeforeFinal       func(context.Context, cardrender.RunState) error
 	// ResumeProgress restores ordinary progress rendering if a separate process
 	// presenter fails. OnResumeProgress runs once before the restored output.
@@ -122,6 +125,8 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 	state := cardrender.NewRunState(cardrender.RunStateInput{StartedAt: input.StartedAt})
 	cardStream := newCardStreamState(state)
 	markdownStream := newMarkdownStreamState()
+	var actions actionDelivery
+	actionPending := false
 	var markdownUpdateFailed bool
 	lastCardUpdate := time.Time{}
 	lastMarkdownUpdate := time.Time{}
@@ -210,6 +215,12 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 					goto done
 				}
 				trackToolFlight(inFlightTools, event)
+				if event.Type == agentport.EventUserAction {
+					actions.send(ctx, input, event)
+					actionPending = true
+				} else if event.Type == agentport.EventText || event.Type == agentport.EventThinking || event.Type == agentport.EventToolUse || event.Type == agentport.EventToolResult {
+					actionPending = false
+				}
 				armIdleTimer()
 				cardEvent := toCardEvent(event)
 				state = cardrender.Reduce(state, cardEvent)
@@ -255,9 +266,16 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 	default:
 	}
 	finalCardState := state
+	if input.FinalAnswerOnly && state.Status == cardrender.StatusSucceeded && !hasCardContent(finalAnswerOnlyState(state)) {
+		if actionPending && len(actions.delivered) > 0 {
+			return state, actions.err()
+		}
+		state.Blocks = append(state.Blocks, cardrender.Block{Kind: cardrender.BlockText, Phase: cardrender.TextFinalAnswer, Content: "本轮未返回最终回复。"})
+		finalCardState = state
+	}
 	if normalizeReplyMode(input.ReplyMode) == ReplyCard {
 		if input.DeferUntilDone && shouldSplitFinalCard(input, state) {
-			return state, sendSplitFinalCards(ctx, input, state)
+			return state, errors.Join(sendSplitFinalCards(ctx, input, renderRunState(input, state)), actions.err())
 		}
 		if !input.DeferUntilDone {
 			var err error
@@ -267,7 +285,7 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 			}
 		}
 	}
-	return state, sendFinal(ctx, input, finalCardState, cardStream.messageID, markdownStream, markdownUpdateFailed)
+	return state, errors.Join(sendFinal(ctx, input, finalCardState, cardStream.messageID, markdownStream, markdownUpdateFailed), actions.err())
 }
 
 func trackToolFlight(inFlight map[string]struct{}, event agentport.AgentEvent) {
@@ -446,8 +464,14 @@ func finalAnswerOnlyState(state cardrender.RunState) cardrender.RunState {
 	filtered.Reasoning.Active = false
 	filtered.Footer = ""
 	filtered.Blocks = make([]cardrender.Block, 0, len(state.Blocks))
+	hasFinal := false
 	for _, block := range state.Blocks {
-		if block.Kind == cardrender.BlockText {
+		if block.Kind == cardrender.BlockText && block.Phase == cardrender.TextFinalAnswer {
+			hasFinal = true
+		}
+	}
+	for _, block := range state.Blocks {
+		if block.Kind == cardrender.BlockText && (block.Phase == cardrender.TextFinalAnswer || (!hasFinal && block.Phase == "")) {
 			filtered.Blocks = append(filtered.Blocks, block)
 		}
 	}
@@ -485,6 +509,7 @@ func toCardEvent(event agentport.AgentEvent) cardrender.Event {
 		CWD:                   event.CWD,
 		Model:                 event.Model,
 		Delta:                 event.Delta,
+		Phase:                 cardrender.TextPhase(event.Phase),
 		ID:                    event.ID,
 		Name:                  event.Name,
 		Input:                 event.Input,

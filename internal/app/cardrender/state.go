@@ -35,17 +35,24 @@ func Reduce(state RunState, event Event) RunState {
 		state.ensureRunning()
 		delta := value(event.Delta)
 		last := len(state.Blocks) - 1
-		if last >= 0 && state.Blocks[last].Kind == BlockText && state.Blocks[last].Streaming {
+		if last >= 0 && state.Blocks[last].Kind == BlockText && state.Blocks[last].Streaming && state.Blocks[last].Phase == event.Phase && state.Blocks[last].ID == value(event.ID) {
 			state.Blocks[last].Content += delta
 		} else {
+			state.closeStreamingText()
 			state.Blocks = append(state.Blocks, Block{
 				Kind:      BlockText,
+				Phase:     event.Phase,
+				ID:        value(event.ID),
 				Content:   delta,
 				Streaming: true,
 			})
 		}
 		state.Reasoning.Active = false
 		state.Footer = FooterStreaming
+	case EventUserAction:
+		state.ensureRunning()
+		state.closeStreamingText()
+		state.Reasoning.Active = false
 	case EventThinking:
 		state.ensureRunning()
 		state.Reasoning.Content += value(event.Delta)

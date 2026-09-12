@@ -3,7 +3,9 @@ package claudecli
 import (
 	"encoding/json"
 	"math"
+	"strings"
 
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/agentoutput"
 	agentport "github.com/GatewayJ/lark-bridge-agent-sdk/internal/ports/agent"
 )
 
@@ -17,10 +19,11 @@ const (
 type StreamTranslator struct {
 	sessionID string
 	terminal  bool
+	commands  map[string]string
 }
 
 func NewStreamTranslator() *StreamTranslator {
-	return &StreamTranslator{}
+	return &StreamTranslator{commands: map[string]string{}}
 }
 
 func TranslateEvent(raw any) []agentport.AgentEvent {
@@ -36,6 +39,9 @@ func (t *StreamTranslator) TranslateLine(line []byte) ([]agentport.AgentEvent, e
 }
 
 func (t *StreamTranslator) Translate(raw any) []agentport.AgentEvent {
+	if t.terminal {
+		return nil
+	}
 	record, ok := recordValue(raw)
 	if !ok {
 		return nil
@@ -49,9 +55,39 @@ func (t *StreamTranslator) Translate(raw any) []agentport.AgentEvent {
 		}
 		return t.translateSystemInit(record)
 	case "assistant":
-		return translateAssistant(record)
+		parentID, _ := stringValue(record["parent_tool_use_id"])
+		events := translateAssistant(record)
+		for index, event := range events {
+			if parentID != "" && event.Type == agentport.EventText {
+				events[index].Phase = agentport.TextCommentary
+			}
+			if event.Type == agentport.EventToolUse && event.ID != nil && event.Name != nil && (*event.Name == "Bash" || *event.Name == "bash") {
+				if input, ok := recordValue(event.Input); ok {
+					command, _ := stringValue(input["command"])
+					if t.commands == nil {
+						t.commands = map[string]string{}
+					}
+					t.commands[*event.ID] = command
+				}
+			}
+		}
+		return events
 	case "user":
-		return translateUser(record)
+		var events []agentport.AgentEvent
+		for _, event := range translateUser(record) {
+			events = append(events, event)
+			if event.ID == nil {
+				continue
+			}
+			command := t.commands[*event.ID]
+			delete(t.commands, *event.ID)
+			if event.Output != nil && (event.IsError == nil || !*event.IsError) {
+				if action, ok := agentoutput.LarkAuthorization(command, *event.Output); ok {
+					events = append(events, action)
+				}
+			}
+		}
+		return events
 	case "result":
 		return t.translateResult(record)
 	default:
@@ -164,6 +200,11 @@ func translateUser(raw map[string]any) []agentport.AgentEvent {
 func (t *StreamTranslator) translateResult(raw map[string]any) []agentport.AgentEvent {
 	t.terminal = true
 	events := make([]agentport.AgentEvent, 0, 2)
+	subtype, _ := stringValue(raw["subtype"])
+	failed := raw["is_error"] == true || strings.HasPrefix(subtype, "error")
+	if result, ok := stringValue(raw["result"]); ok && !failed {
+		events = append(events, agentport.AgentEvent{Type: agentport.EventText, Phase: agentport.TextFinalAnswer, Delta: stringPtr(result)})
+	}
 	if usage, ok := recordValue(raw["usage"]); ok {
 		event := agentport.AgentEvent{Type: agentport.EventUsage}
 		if value, ok := intValue(usage["input_tokens"]); ok {
@@ -184,7 +225,24 @@ func (t *StreamTranslator) translateResult(raw map[string]any) []agentport.Agent
 	if ok {
 		t.sessionID = sessionID
 	}
-	events = append(events, doneEvent(t.sessionID, agentport.TerminationNormal))
+	if failed {
+		message, _ := stringValue(raw["result"])
+		if message == "" {
+			if messages, ok := arrayValue(raw["errors"]); ok {
+				for _, entry := range messages {
+					if text, ok := stringValue(entry); ok {
+						message += text + "\n"
+					}
+				}
+			}
+		}
+		if message == "" {
+			message = "Claude run failed: " + subtype
+		}
+		events = append(events, agentport.AgentEvent{Type: agentport.EventError, Message: stringPtr(strings.TrimSpace(message)), TerminationReason: agentport.TerminationFailed})
+	} else {
+		events = append(events, doneEvent(t.sessionID, agentport.TerminationNormal))
+	}
 	return events
 }
 

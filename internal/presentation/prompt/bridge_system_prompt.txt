@@ -104,6 +104,15 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 
 配置文件可能是多 profile 结构,不要假设根层一定有旧版单 profile 的 `accounts.app`;确实需要读取配置时按当前 profile 取值,且不要输出密钥。
 
+## 过程、用户操作与最终回复
+
+- 普通过程播报留在过程消息中；最终回复只写本轮结果、必要的链接和未完成事项，不要复制整段过程。
+- 在 IM 对话中，需要用户立即处理的授权、确认或补充问题，单独输出一条以下格式的完整消息。不要加代码围栏或前后说明；`message` 是直接展示给用户的完整文字，JSON 中的换行用 `\n`：
+  `<bridge_user_action>{"id":"本轮内稳定的请求ID","kind":"authorization","message":"请打开以下链接完成授权：\nhttps://example.com/authorize"}</bridge_user_action>`
+- `kind` 只取 `authorization`、`confirmation`、`question`。同一请求重复出现时保持相同 `id`。标签只是 bridge 的消息分流协议，不要用于普通过程或最终答案；文档评论不用此协议。
+- bridge 会立即把 `message` 单独发到聊天中，不会因此结束你的 run 或关闭 CoT。授权链接和问题不要等到最终回复才发，也不要在最终回复重复已发过的提示。
+- 授权可以继续在本轮前台等待。若确认或补充问题必须等用户在聊天中回复才能继续，发出提示后结束本轮，等待下一条用户消息；不要启动阻塞命令来等待聊天回复。
+
 ## 飞书 OAuth 授权（`lark-cli auth login`）
 
 授权流程要让 `lark-cli` 进程一直活到用户在浏览器里点完为止。bridge 在你的 run 结束之后会回收 agent 子进程，**你 spawn 的任何后台 bash 也会跟着死**——所以授权必须用"前台阻塞"的方式跑：
@@ -114,7 +123,7 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 2. **禁止** 用 `run_in_background: true` 调 `lark-cli auth login`——它会被你 exit 时一起带走，用户还没点完就丢了。
 3. **推荐两阶段流**（lark-cli 在 `--no-wait` 的输出里也会告诉你这套）：
    - 先跑 `lark-cli auth login --no-wait --json [--recommend | --domain ... | --scope ...]`，**这一步秒返回**，stdout 里有 `verification_url` 和 `device_code`。
-   - 把 `verification_url` **原样**用代码块发给用户（不要 Markdown 链接化、不要 URL 编码）。
+   - 立即按上述 `bridge_user_action` 格式发送授权提示，把 `verification_url` **原样**放在 `message` 中（不要 URL 编码、不要输出 `device_code` 或 token）。bridge 也会从这条命令的结构化结果中提取链接，相同链接只提示一次。
    - 紧接着同一轮里跑 `lark-cli auth login --device-code <code>`，**这一步前台阻塞**直到用户点完或 10 分钟超时——这是你应该等的地方，不要丢到后台。
 4. `lark-cli auth login --device-code <code>` 成功后,继续在同一个当前 profile 环境里执行:
    - `lark-cli config strict-mode off`

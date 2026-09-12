@@ -239,6 +239,9 @@ func ConsumeEvents(ctx context.Context, events <-chan agentport.AgentEvent, publ
 	textMessageOpen := false
 	textMessageIndex := 0
 	textMessageID := ""
+	actionStepID := ""
+	actionIndex := 0
+	sourceTextID := ""
 	toolBrief := map[string]struct {
 		name  string
 		input any
@@ -263,7 +266,14 @@ func ConsumeEvents(ctx context.Context, events <-chan agentport.AgentEvent, publ
 		textMessageID = ""
 	}
 
+	closeAction := func() {
+		if actionStepID != "" {
+			publisher.Enqueue("STEP_FINISHED", map[string]any{"stepId": actionStepID, "stepName": "等待用户操作，请查看聊天中的提示"})
+			actionStepID = ""
+		}
+	}
 	finish := func(reason string) error {
+		closeAction()
 		return publisher.Finish(ctx, reason)
 	}
 
@@ -283,6 +293,13 @@ func ConsumeEvents(ctx context.Context, events <-chan agentport.AgentEvent, publ
 			switch evt.Type {
 			case agentport.EventSystem, agentport.EventUsage:
 				continue
+			case agentport.EventUserAction:
+				closeReasoning()
+				closeText()
+				closeAction()
+				actionIndex++
+				actionStepID = fmt.Sprintf("user-action-%s-%d", publisher.runID, actionIndex)
+				publisher.Enqueue("STEP_STARTED", map[string]any{"stepId": actionStepID, "stepName": "等待用户操作，请查看聊天中的提示"})
 			case agentport.EventThinking:
 				closeText()
 				if !reasoningOpen {
@@ -331,6 +348,7 @@ func ConsumeEvents(ctx context.Context, events <-chan agentport.AgentEvent, publ
 				}
 				publisher.Enqueue("TOOL_CALL_END", map[string]any{"toolCallId": id})
 			case agentport.EventToolResult:
+				closeAction()
 				id := value(evt.ID)
 				content := "工具调用已完成"
 				if mode == ModeDetailed {
@@ -350,7 +368,16 @@ func ConsumeEvents(ctx context.Context, events <-chan agentport.AgentEvent, publ
 				})
 				delete(toolBrief, id)
 			case agentport.EventText:
+				closeAction()
 				closeReasoning()
+				if evt.Phase == agentport.TextFinalAnswer {
+					closeText()
+					continue
+				}
+				if sourceTextID != value(evt.ID) {
+					closeText()
+				}
+				sourceTextID = value(evt.ID)
 				if !textStepOpen {
 					textStepOpen = true
 					publisher.Enqueue("STEP_STARTED", map[string]any{

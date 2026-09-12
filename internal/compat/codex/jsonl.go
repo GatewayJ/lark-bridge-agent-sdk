@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/agentoutput"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/ports/agent"
 )
 
@@ -28,6 +29,7 @@ type CodexJsonlTranslator struct {
 	terminal             bool
 	lastNonTerminalError string
 	startedItems         map[string]struct{}
+	commands             map[string]string
 	drift                ProtocolDriftState
 	reporter             JSONLReporter
 }
@@ -41,6 +43,7 @@ func NewCodexJsonlTranslator() *CodexJsonlTranslator {
 func NewCodexJsonlTranslatorWithReporter(reporter JSONLReporter) *CodexJsonlTranslator {
 	return &CodexJsonlTranslator{
 		startedItems: make(map[string]struct{}),
+		commands:     make(map[string]string),
 		reporter:     reporter,
 	}
 }
@@ -158,6 +161,7 @@ func (t *CodexJsonlTranslator) translateItemStarted(raw map[string]any) []agent.
 	t.startedItems[id] = struct{}{}
 
 	command, _ := stringValue(item["command"])
+	t.commands[id] = command
 	return []agent.AgentEvent{{
 		Type:  agent.EventToolUse,
 		ID:    stringPtr(id),
@@ -181,6 +185,7 @@ func (t *CodexJsonlTranslator) translateItemCompleted(raw map[string]any) []agen
 		return []agent.AgentEvent{{
 			Type:  agent.EventText,
 			Delta: stringPtr(message),
+			Phase: textPhase(item),
 		}}
 	case "command_execution":
 		return t.translateCommandExecutionCompleted(item)
@@ -203,12 +208,20 @@ func (t *CodexJsonlTranslator) translateCommandExecutionCompleted(item map[strin
 	output, _ := firstString(item["output"], item["aggregated_output"], item["stdout"])
 	exitCode, hasExitCode := numberValue(item["exit_code"])
 	isError := hasExitCode && exitCode != 0
-	return []agent.AgentEvent{{
+	events := []agent.AgentEvent{{
 		Type:    agent.EventToolResult,
 		ID:      stringPtr(id),
 		Output:  stringPtr(output),
 		IsError: boolPtr(isError),
 	}}
+	command := t.commands[id]
+	delete(t.commands, id)
+	if !isError {
+		if action, ok := agentoutput.LarkAuthorization(command, output); ok {
+			events = append(events, action)
+		}
+	}
+	return events
 }
 
 func (t *CodexJsonlTranslator) translateAgentMessage(raw map[string]any) []agent.AgentEvent {
@@ -219,7 +232,13 @@ func (t *CodexJsonlTranslator) translateAgentMessage(raw map[string]any) []agent
 	return []agent.AgentEvent{{
 		Type:  agent.EventText,
 		Delta: stringPtr(message),
+		Phase: textPhase(raw),
 	}}
+}
+
+func textPhase(raw map[string]any) agent.TextPhase {
+	phase, _ := stringValue(raw["phase"])
+	return agent.TextPhase(phase)
 }
 
 func (t *CodexJsonlTranslator) translateTurnCompleted(raw map[string]any) []agent.AgentEvent {

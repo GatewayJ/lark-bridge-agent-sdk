@@ -129,8 +129,11 @@ func TestHandleRepliesWhenWorkspaceInvalid(t *testing.T) {
 func TestHandleSuccessfulRunRepliesWithPlainText(t *testing.T) {
 	ports := newFakeCommentPorts()
 	ports.target = Target{FileToken: "resolved-token", FileType: "docx"}
+	progress := textEvent("正在读取文档。")
+	progress.Phase = agentport.TextCommentary
 	executor := &fakeCommentExecutor{
 		execution: newFakeCommentExecution(
+			progress,
 			textEvent("**完成**"),
 			doneEvent(),
 		),

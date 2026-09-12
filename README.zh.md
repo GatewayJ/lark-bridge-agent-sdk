@@ -93,6 +93,11 @@ deny-by-default 处理。带环境变量、信号处理和 owner/allowed users �
 
 ## 文档
 
+开启 CoT 后，过程播报和工具记录保留在 CoT，聊天中只发送单独的最终答案。
+授权、确认和补充问题会立即作为普通消息显示，不依赖抽屉入口；发送提示不会
+结束运行或关闭 CoT。OAuth 仍在同一轮前台等待，授权完成后继续。自定义适配器
+可使用 `Event.Phase` 和 `EventUserAction`，详见 [消息协议](./docs/pkg/bridge.md)。
+
 - [Go SDK 使用说明](./docs/go-sdk-usage.md)
 - [pkg/bridge facade](./docs/pkg/bridge.md)
 

@@ -88,14 +88,25 @@ type Attachment struct {
 type EventType string
 
 const (
-	EventSystem     EventType = "system"
-	EventText       EventType = "text"
+	EventSystem EventType = "system"
+	EventText   EventType = "text"
+	// EventUserAction carries a complete prompt in Delta, a stable request ID in
+	// ID, and an optional kind (authorization, confirmation, question) in Name.
+	// It is delivered immediately and does not terminate the run.
+	EventUserAction EventType = "user_action"
 	EventThinking   EventType = "thinking"
 	EventToolUse    EventType = "tool_use"
 	EventToolResult EventType = "tool_result"
 	EventUsage      EventType = "usage"
 	EventDone       EventType = "done"
 	EventError      EventType = "error"
+)
+
+type TextPhase string
+
+const (
+	TextCommentary  TextPhase = "commentary"
+	TextFinalAnswer TextPhase = "final_answer"
 )
 
 type TerminationReason string
@@ -119,7 +130,8 @@ type Event struct {
 	CWD       *string `json:"cwd,omitempty"`
 	Model     *string `json:"model,omitempty"`
 
-	Delta *string `json:"delta,omitempty"`
+	Delta *string   `json:"delta,omitempty"`
+	Phase TextPhase `json:"phase,omitempty"`
 
 	ID      *string `json:"id,omitempty"`
 	Name    *string `json:"name,omitempty"`

@@ -68,6 +68,7 @@ func fromAgentEvent(event agentport.AgentEvent) Event {
 		CWD:                   event.CWD,
 		Model:                 event.Model,
 		Delta:                 event.Delta,
+		Phase:                 TextPhase(event.Phase),
 		ID:                    event.ID,
 		Name:                  event.Name,
 		Input:                 event.Input,

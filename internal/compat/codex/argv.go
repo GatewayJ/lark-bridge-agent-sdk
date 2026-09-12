@@ -15,12 +15,13 @@ const (
 )
 
 type BuildExecArgsInput struct {
-	CWD              string
-	Sandbox          SandboxMode
-	ThreadID         string
-	Images           []string
-	IgnoreUserConfig bool
-	IgnoreRules      *bool
+	CWD               string
+	Sandbox           SandboxMode
+	ThreadID          string
+	Images            []string
+	IgnoreUserConfig  bool
+	IgnoreRules       *bool
+	OutputLastMessage string
 }
 
 func BuildExecArgs(input BuildExecArgsInput) ([]string, error) {
@@ -48,24 +49,27 @@ func BuildExecArgs(input BuildExecArgsInput) ([]string, error) {
 		input.CWD,
 	)
 
-	imageFlags := make([]string, 0, len(input.Images)*2)
+	messageFlags := make([]string, 0, len(input.Images)*2+2)
+	if input.OutputLastMessage != "" {
+		messageFlags = append(messageFlags, "--output-last-message", input.OutputLastMessage)
+	}
 	for _, path := range input.Images {
-		imageFlags = append(imageFlags, "--image", path)
+		messageFlags = append(messageFlags, "--image", path)
 	}
 
 	if input.ThreadID != "" {
 		args := []string{"exec"}
 		args = append(args, globalFlags...)
 		args = append(args, "resume", "--json")
-		args = append(args, imageFlags...)
+		args = append(args, messageFlags...)
 		args = append(args, input.ThreadID, "-")
 		return args, nil
 	}
 
 	args := []string{"exec", "--json"}
 	args = append(args, globalFlags...)
-	args = append(args, imageFlags...)
-	if len(imageFlags) > 0 {
+	args = append(args, messageFlags...)
+	if len(input.Images) > 0 {
 		args = append(args, "--")
 	}
 	args = append(args, "-")

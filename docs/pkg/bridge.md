@@ -161,8 +161,36 @@ intake. The managed path covers:
 - optional COT process messages through `LarkCOTClient`, followed by a separate
   final-answer reply; creation or update failures are logged and restore ordinary
   progress rendering immediately, respecting the configured tool visibility;
+- immediate user-action messages for authorization, confirmation, and questions,
+  independent of COT completion; sending a prompt does not terminate the run;
 - best-effort `Typing` reactions for non-card reply modes when reactions are
   supported.
+
+`Event.Phase` distinguishes `TextCommentary` from `TextFinalAnswer`. The
+built-in Codex adapter uses `--output-last-message` after process exit; Claude
+uses its successful `result` message. Earlier assistant messages remain progress.
+The final answer retains all its paragraphs. CLI versions without an authoritative
+result fall back to the last complete, unclassified assistant message, never the
+whole transcript. Failed or interrupted runs do not promote progress to a final
+answer. For custom adapters, set the phase explicitly; an empty phase preserves
+legacy rendering when no explicit final answer exists.
+
+Custom adapters can emit `EventUserAction` with a complete user-facing prompt in
+`Delta`, a stable request `ID`, and `Name` set to `authorization`, `confirmation`,
+or `question`. The managed intake sends it once as an ordinary message, with a
+card fallback if sending fails. Authorization prompts are only shown in private
+chats; groups receive a request to continue in private. COT remains active and
+shows a waiting step. Only completion, interruption, or failure ends the run.
+This event does not add a chat-input callback: a foreground OAuth tool can wait
+in the same run, while a question requiring a chat reply must end the turn and
+continue when the next user message arrives.
+
+The injected CLI prompt uses a standalone
+`<bridge_user_action>{"id":"request-1","kind":"question","message":"How long should the meeting be?"}</bridge_user_action>`
+message for this event. The adapters also recognize structured
+`lark-cli auth login --no-wait --json` results and deduplicate the model's
+matching authorization prompt. Ordinary prose and arbitrary URLs are not
+classified as requests for user action.
 
 `ProfileBridgeOptions.LogDir` overrides the default
 `<Home>/profiles/<Profile>/logs` JSONL log directory.

@@ -363,7 +363,7 @@ func (s *Service) collectReply(ctx context.Context, execution RunExecution, sess
 			})
 			switch event.Type {
 			case agentport.EventText:
-				if event.Delta != nil {
+				if event.Delta != nil && event.Phase != agentport.TextCommentary {
 					answer.WriteString(*event.Delta)
 				}
 			case agentport.EventToolUse, agentport.EventToolResult:

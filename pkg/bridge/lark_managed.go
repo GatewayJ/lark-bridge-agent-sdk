@@ -860,6 +860,7 @@ func (i *managedLarkIntake) handleBatch(ctx context.Context, batch appintake.Bat
 		ScopeID:       batch.Scope.Key,
 		OriginMessage: last.MessageID,
 		InputPreview:  strings.TrimSpace(last.Content),
+		PrivateChat:   first.ChatType == appintake.ChatTypeP2P,
 		RenderOptions: i.renderOptions(run.Metadata(), first),
 	})
 	return err
@@ -888,21 +889,27 @@ type managedPresentInput struct {
 	OriginMessage string
 	InputPreview  string
 	RenderOptions appcardrender.RenderOptions
+	PrivateChat   bool
 }
 
 func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresentInput) (appcardrender.RunState, error) {
 	channel := i.presenterChannel()
+	actionError := func(ctx context.Context, err error) {
+		i.recordError(ctx, err, map[string]any{"phase": "user_action.delivery", "runId": input.RunID})
+	}
 	if i == nil || i.cotClient == nil || input.COTMessages == appcot.ModeOff {
 		return appimpresenter.Present(ctx, appimpresenter.Input{
-			Run:           input.Run,
-			Channel:       channel,
-			ChatID:        input.ChatID,
-			Options:       input.Options,
-			ReplyMode:     input.ReplyMode,
-			HideToolCalls: input.HideToolCalls,
-			CardRollover:  i.cardRollover,
-			IdleTimeout:   input.IdleTimeout,
-			RenderOptions: input.RenderOptions,
+			Run:               input.Run,
+			Channel:           channel,
+			ChatID:            input.ChatID,
+			Options:           input.Options,
+			ReplyMode:         input.ReplyMode,
+			HideToolCalls:     input.HideToolCalls,
+			CardRollover:      i.cardRollover,
+			IdleTimeout:       input.IdleTimeout,
+			RenderOptions:     input.RenderOptions,
+			PrivateChat:       input.PrivateChat,
+			OnUserActionError: actionError,
 		})
 	}
 	publisher := appcot.NewPublisher(appcot.PublisherOptions{
@@ -923,15 +930,17 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 	if !publisher.Start(ctx) {
 		notifyFallback(ctx)
 		return appimpresenter.Present(ctx, appimpresenter.Input{
-			Run:           input.Run,
-			Channel:       channel,
-			ChatID:        input.ChatID,
-			Options:       input.Options,
-			ReplyMode:     input.ReplyMode,
-			HideToolCalls: input.HideToolCalls,
-			CardRollover:  i.cardRollover,
-			IdleTimeout:   input.IdleTimeout,
-			RenderOptions: input.RenderOptions,
+			Run:               input.Run,
+			Channel:           channel,
+			ChatID:            input.ChatID,
+			Options:           input.Options,
+			ReplyMode:         input.ReplyMode,
+			HideToolCalls:     input.HideToolCalls,
+			CardRollover:      i.cardRollover,
+			IdleTimeout:       input.IdleTimeout,
+			RenderOptions:     input.RenderOptions,
+			PrivateChat:       input.PrivateChat,
+			OnUserActionError: actionError,
 		})
 	}
 	fanoutCtx, cancelFanout := context.WithCancel(ctx)
@@ -943,19 +952,21 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 		_ = appcot.ConsumeEvents(fanoutCtx, cotEvents, publisher, input.COTMessages)
 	}()
 	state, err := appimpresenter.Present(ctx, appimpresenter.Input{
-		Run:              presenterEventRun{events: presenterEvents, stopper: input.Run},
-		Channel:          channel,
-		ChatID:           input.ChatID,
-		Options:          input.Options,
-		ReplyMode:        input.ReplyMode,
-		HideToolCalls:    input.HideToolCalls,
-		CardRollover:     i.cardRollover,
-		IdleTimeout:      input.IdleTimeout,
-		DeferUntilDone:   true,
-		FinalAnswerOnly:  true,
-		RenderOptions:    input.RenderOptions,
-		ResumeProgress:   publisher.Degraded(),
-		OnResumeProgress: notifyFallback,
+		Run:               presenterEventRun{events: presenterEvents, stopper: input.Run},
+		Channel:           channel,
+		ChatID:            input.ChatID,
+		Options:           input.Options,
+		ReplyMode:         input.ReplyMode,
+		HideToolCalls:     input.HideToolCalls,
+		CardRollover:      i.cardRollover,
+		IdleTimeout:       input.IdleTimeout,
+		DeferUntilDone:    true,
+		FinalAnswerOnly:   true,
+		RenderOptions:     input.RenderOptions,
+		PrivateChat:       input.PrivateChat,
+		OnUserActionError: actionError,
+		ResumeProgress:    publisher.Degraded(),
+		OnResumeProgress:  notifyFallback,
 		BeforeFinal: func(ctx context.Context, _ appcardrender.RunState) error {
 			select {
 			case <-cotDone:
@@ -2293,6 +2304,7 @@ func toAgentEvent(event Event) agentport.AgentEvent {
 		CWD:                   event.CWD,
 		Model:                 event.Model,
 		Delta:                 event.Delta,
+		Phase:                 agentport.TextPhase(event.Phase),
 		ID:                    event.ID,
 		Name:                  event.Name,
 		Input:                 event.Input,

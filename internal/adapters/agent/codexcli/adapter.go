@@ -16,6 +16,7 @@ import (
 	"time"
 
 	agentpreflight "github.com/GatewayJ/lark-bridge-agent-sdk/internal/adapters/agent/preflight"
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/agentoutput"
 	compatcodex "github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/codex"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/domain/permissions"
 	agentport "github.com/GatewayJ/lark-bridge-agent-sdk/internal/ports/agent"
@@ -175,13 +176,25 @@ func (a *Adapter) Run(ctx context.Context, opts agentport.AgentRunOptions) (agen
 	if a.ignoreRules != nil {
 		ignoreRules = *a.ignoreRules
 	}
+	outputDir, err := os.MkdirTemp("", "lark-bridge-answer-")
+	if err != nil {
+		return nil, fmt.Errorf("create final answer directory: %w", err)
+	}
+	started := false
+	defer func() {
+		if !started {
+			_ = os.RemoveAll(outputDir)
+		}
+	}()
+	outputPath := filepath.Join(outputDir, "answer.txt")
 	args, err := compatcodex.BuildExecArgs(compatcodex.BuildExecArgsInput{
-		CWD:              opts.CWD,
-		Sandbox:          sandbox,
-		ThreadID:         opts.ThreadID,
-		Images:           opts.Images,
-		IgnoreUserConfig: a.ignoreUserConfig,
-		IgnoreRules:      &ignoreRules,
+		CWD:               opts.CWD,
+		Sandbox:           sandbox,
+		ThreadID:          opts.ThreadID,
+		Images:            opts.Images,
+		IgnoreUserConfig:  a.ignoreUserConfig,
+		IgnoreRules:       &ignoreRules,
+		OutputLastMessage: outputPath,
 	})
 	if err != nil {
 		return nil, err
@@ -224,7 +237,9 @@ func (a *Adapter) Run(ctx context.Context, opts agentport.AgentRunOptions) (agen
 		stderrDone: make(chan struct{}),
 		stopGrace:  stopGrace,
 		logger:     a.loggerSnapshot(),
+		outputPath: outputPath,
 	}
+	started = true
 
 	go run.captureStderr(stderr)
 	go run.writePrompt(stdin, promptport.PrefixBridgeSystemPrompt(opts.Prompt, a.promptIdentity()))
@@ -324,6 +339,7 @@ type processRun struct {
 	runtimeError error
 	stderr       bytes.Buffer
 	logger       Logger
+	outputPath   string
 }
 
 func (r *processRun) RunID() string {
@@ -413,6 +429,11 @@ func (r *processRun) writePrompt(stdin io.WriteCloser, text string) {
 func (r *processRun) stream(stdout io.Reader) {
 	defer close(r.events)
 	defer close(r.done)
+	if r.outputPath != "" {
+		defer os.RemoveAll(filepath.Dir(r.outputPath))
+	}
+	output := &agentoutput.Stream{}
+	var terminal *agentport.AgentEvent
 
 	translator := compatcodex.NewCodexJsonlTranslatorWithReporter(func(event string, fields map[string]any) {
 		if r.logger != nil {
@@ -430,7 +451,13 @@ func (r *processRun) stream(stdout io.Reader) {
 		if err != nil {
 			continue
 		}
-		r.emit(events)
+		for _, event := range events {
+			if event.Type == agentport.EventDone || event.Type == agentport.EventError {
+				terminal = &event
+				continue
+			}
+			r.emit(output.Push(event))
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		r.setRuntimeError(fmt.Errorf("codex stdout read error: %w", err))
@@ -439,25 +466,42 @@ func (r *processRun) stream(stdout io.Reader) {
 	exitCode := r.waitProcess()
 	<-r.stderrDone
 	if reason := r.getStopReason(); reason != "" {
-		r.emit(translator.Finish(reason))
-		return
-	}
-	if runtimeErr := r.getRuntimeError(); runtimeErr != nil && exitCode == -1 {
-		r.emit([]agentport.AgentEvent{terminalError(fmt.Sprintf("codex runtime error: %s", runtimeErr.Error()))})
-		return
-	}
-	if exitCode != 0 {
-		if !translator.TerminalEmitted() {
-			r.emit([]agentport.AgentEvent{terminalExitError("codex", exitCode, r.stderrDetail())})
+		stop := agentport.AgentEvent{Type: agentport.EventDone, TerminationReason: agentport.TerminationInterrupted}
+		if terminal != nil {
+			stop.ThreadID = terminal.ThreadID
+		} else if finished := translator.Finish(reason); len(finished) > 0 {
+			stop = finished[0]
 		}
-		return
+		if reason == compatcodex.CodexFinishTimeout {
+			stop.TerminationReason = agentport.TerminationTimeout
+		}
+		terminal = &stop
+	} else if runtimeErr := r.getRuntimeError(); runtimeErr != nil {
+		failure := terminalError(fmt.Sprintf("codex runtime error: %s", runtimeErr.Error()))
+		terminal = &failure
+	} else if exitCode != 0 && (terminal == nil || terminal.Type != agentport.EventError) {
+		failure := terminalExitError("codex", exitCode, r.stderrDetail())
+		terminal = &failure
 	}
-	if runtimeErr := r.getRuntimeError(); runtimeErr != nil && !translator.TerminalEmitted() {
-		r.emit([]agentport.AgentEvent{terminalError(fmt.Sprintf("codex runtime error: %s", runtimeErr.Error()))})
-		return
+	if terminal == nil {
+		for _, event := range translator.Finish("") {
+			terminal = &event
+		}
 	}
-
-	r.emit(translator.Finish(""))
+	success := terminal != nil && terminal.Type == agentport.EventDone && (terminal.TerminationReason == "" || terminal.TerminationReason == agentport.TerminationNormal)
+	var finalText *string
+	if success && r.outputPath != "" {
+		if info, err := os.Stat(r.outputPath); err == nil && info.Size() <= maxScannerToken {
+			if data, err := os.ReadFile(r.outputPath); err == nil {
+				text := strings.TrimSpace(string(data))
+				finalText = &text
+			}
+		}
+	}
+	r.emit(output.Finish(finalText, success))
+	if terminal != nil {
+		r.emit([]agentport.AgentEvent{*terminal})
+	}
 }
 
 func (r *processRun) waitProcess() int {
