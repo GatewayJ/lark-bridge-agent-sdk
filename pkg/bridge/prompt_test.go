@@ -77,7 +77,7 @@ func TestBuildAgentPromptFacadeAddsDefaultBridgeInstructions(t *testing.T) {
 	})
 	for _, needle := range []string{
 		"LARK_CHANNEL=1",
-		"danger-full-access",
+		"以命令返回结果为准",
 		"context detected but not bound",
 		"Reply in the same language as the user.",
 	} {
@@ -97,7 +97,28 @@ func TestBuildAgentPromptRawLeavesInstructionsUntouched(t *testing.T) {
 		},
 		UserInput: "hello",
 	})
-	if strings.Contains(got, "danger-full-access") {
+	if strings.Contains(got, "<bridge_instructions>") {
 		t.Fatalf("BuildAgentPromptRaw unexpectedly added default instructions:\n%s", got)
+	}
+}
+
+func TestPromptInstructionsPreserveCallerInput(t *testing.T) {
+	instructions := []string{"custom requirement", "custom requirement"}
+	input := BuildAgentPromptInput{Instructions: instructions}
+	raw := BuildAgentPromptRaw(input)
+	if strings.Count(raw, "custom requirement") != 2 {
+		t.Fatalf("raw instructions changed: %s", raw)
+	}
+	got := BuildAgentPrompt(input)
+	if strings.Count(got, "custom requirement") != 1 {
+		t.Fatalf("merged instructions: %s", got)
+	}
+	if len(instructions) != 2 || instructions[0] != "custom requirement" {
+		t.Fatal("caller instructions modified")
+	}
+	defaults := DefaultBridgeAgentInstructions()
+	defaults[0] = "changed"
+	if DefaultBridgeAgentInstructions()[0] == "changed" {
+		t.Fatal("shared defaults modified")
 	}
 }

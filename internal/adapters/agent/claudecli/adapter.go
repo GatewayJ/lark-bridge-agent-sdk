@@ -348,8 +348,9 @@ func (r *processRun) stream(stdout io.Reader) {
 		r.setRuntimeError(fmt.Errorf("claude stdout read error: %w", err))
 	}
 
-	exitCode := r.waitProcess()
+	// 等待 stderr 读取结束后再调用 Wait，防止其提前关闭管道。
 	<-r.stderrDone
+	exitCode := r.waitProcess()
 	if reason := r.getStopReason(); reason != "" {
 		stop := doneEvent(translator.sessionID, agentport.TerminationInterrupted)
 		if reason == ClaudeFinishTimeout {

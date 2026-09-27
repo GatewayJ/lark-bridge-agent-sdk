@@ -495,11 +495,11 @@ func commentRunTimeout(sessions *appsession.Store, executionScopeID string, comm
 }
 
 func finalizeReply(answer string, errorMessage string) string {
-	reply := StripMarkdown(strings.TrimSpace(answer))
+	reply := StripMarkdown(answer)
 	if errorMessage != "" {
 		reply = "⚠️ Claude 报错：" + errorMessage
 	}
-	if reply == "" {
+	if strings.TrimSpace(reply) == "" {
 		reply = "（无回复内容）"
 	}
 	return truncateReply(reply, ReplyMaxChars)

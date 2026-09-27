@@ -796,7 +796,7 @@ printf '%s\n' '{"type":"turn.completed"}'
 	default:
 	}
 	prompt := readBridgeFile(t, filepath.Join(cwd, "prompt.txt"))
-	if strings.Contains(prompt, "<quoted_messages>") || strings.Contains(prompt, "topic root content") {
+	if strings.Contains(prompt, "\n<quoted_messages>\n") || strings.Contains(prompt, "topic root content") {
 		t.Fatalf("topic root quote leaked into prompt:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, `"threadId":"omt_topic"`) {

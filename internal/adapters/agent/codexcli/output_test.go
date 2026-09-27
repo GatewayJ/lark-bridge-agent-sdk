@@ -27,12 +27,12 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-last-message" ]; then shift; answer_path="$1"; fi
   shift
 done
-cat > /dev/null
+cat > prompt.txt
 printf '%s' "$answer_path" > answer_path.txt
 printf '%s\n' '{"type":"agent_message","message":"Checking the calendar"}'
 printf '%s\n' '{"type":"agent_message","message":"Candidate answer"}'
 printf '%s\n' '{"type":"turn.completed"}'
-printf 'Canonical final\n\nMeeting created' > "$answer_path"
+printf '    foo_bar_baz := a * b\n\n    __init__()\n' > "$answer_path"
 exit `+tc.exit)
 			run, err := New(Options{Binary: binary, ProfileStateDir: t.TempDir()}).Run(context.Background(), agentport.AgentRunOptions{
 				RunID: "final-file", Prompt: "test", CWD: cwd, ThreadID: tc.thread, Sandbox: permissions.CodexSandboxDangerFullAccess,
@@ -41,6 +41,13 @@ exit `+tc.exit)
 				t.Fatal(err)
 			}
 			events := collectEvents(t, run)
+			prompt := readFile(t, filepath.Join(cwd, "prompt.txt"))
+			for _, rule := range []string{"bridge_context.chatType", "bridge_token", "bridge_user_action", "LARK_CHANNEL_PROFILE", "lark-cli auth login --device-code"} {
+				if !strings.Contains(prompt, rule) {
+					t.Fatalf("missing current rule %q", rule)
+				}
+			}
+
 			var final string
 			for _, event := range events {
 				if event.Type == agentport.EventText && event.Phase == agentport.TextFinalAnswer {
@@ -48,7 +55,7 @@ exit `+tc.exit)
 				}
 			}
 			if tc.exit == "0" {
-				if final != "Canonical final\n\nMeeting created" || events[len(events)-1].Type != agentport.EventDone {
+				if final != "    foo_bar_baz := a * b\n\n    __init__()\n" || events[len(events)-1].Type != agentport.EventDone {
 					t.Fatalf("final=%q events=%#v", final, events)
 				}
 			} else if final != "" || events[len(events)-1].Type != agentport.EventError {

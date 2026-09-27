@@ -463,8 +463,9 @@ func (r *processRun) stream(stdout io.Reader) {
 		r.setRuntimeError(fmt.Errorf("codex stdout read error: %w", err))
 	}
 
-	exitCode := r.waitProcess()
+	// 等待 stderr 读取结束后再调用 Wait，防止其提前关闭管道。
 	<-r.stderrDone
+	exitCode := r.waitProcess()
 	if reason := r.getStopReason(); reason != "" {
 		stop := agentport.AgentEvent{Type: agentport.EventDone, TerminationReason: agentport.TerminationInterrupted}
 		if terminal != nil {
@@ -493,7 +494,7 @@ func (r *processRun) stream(stdout io.Reader) {
 	if success && r.outputPath != "" {
 		if info, err := os.Stat(r.outputPath); err == nil && info.Size() <= maxScannerToken {
 			if data, err := os.ReadFile(r.outputPath); err == nil {
-				text := strings.TrimSpace(string(data))
+				text := string(data)
 				finalText = &text
 			}
 		}

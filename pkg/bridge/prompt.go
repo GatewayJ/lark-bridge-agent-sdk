@@ -83,10 +83,10 @@ const (
 )
 
 var defaultBridgeAgentInstructions = []string{
-	"你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。",
-	"不要 unset LARK_CHANNEL / LARK_CHANNEL_HOME / LARK_CHANNEL_PROFILE / LARKSUITE_CLI_CONFIG_DIR，也不要用 env -u LARK_CHANNEL 绕回本机普通配置。",
-	"Codex bridge 默认使用 danger-full-access 对齐 Claude bridge 的 bypassPermissions 行为，因此 lark-cli 应能像用户本机终端一样访问 keychain。",
-	"如果提示 lark-channel context detected but not bound，停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight；不要改用普通 profile，不要自行 bind，也不要直接读取 config.json 里的账号或密钥。",
+	"普通 lark-cli 继承 LARK_CHANNEL=1 和当前 bridge profile，使用该 profile 的私有配置。",
+	"保留 LARK_CHANNEL / LARK_CHANNEL_HOME / LARK_CHANNEL_PROFILE / LARK_CHANNEL_CONFIG / LARKSUITE_CLI_CONFIG_DIR，不要 unset 或使用 env -u 绕回本机普通配置。",
+	"文件访问权限以当前执行环境为准；认证和 keychain 是否可用，以命令返回结果为准。",
+	"遇到 lark-channel context detected but not bound 等绑定异常，停止操作，请用户重启 bridge 或运行 bridge doctor/preflight；不要改用普通 profile、自行 bind 或直接读取 config.json 的账号密钥，不输出密钥。",
 }
 
 func DefaultBridgeAgentInstructions() []string {

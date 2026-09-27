@@ -1123,3 +1123,24 @@ func (t *blockingRuntimeInfoTransport) FetchLarkOwner(ctx context.Context, appID
 func (t *blockingRuntimeInfoTransport) ListLarkKnownChats(context.Context, int) ([]LarkKnownChatInfo, error) {
 	return nil, nil
 }
+
+func TestManagedPromptDoesNotRepeatDefaultEnvironmentInstructions(t *testing.T) {
+	intake := newManagedLarkIntake(managedLarkIntakeOptions{
+		Transport: NewFakeLarkTransport(LarkBotIdentity{OpenID: "ou_bot"}),
+	})
+	prompt := intake.buildMessagePrompt(context.Background(), toInternalLarkMessages([]LarkMessageInput{{
+		MessageID: "om_input", ChatID: "oc_chat", ChatType: LarkChatTypeP2P, Content: "hello",
+	}}), nil, nil)
+	if strings.Contains(prompt, "<bridge_instructions>") {
+		t.Fatalf("repeated defaults: %s", prompt)
+	}
+	full := PrefixBridgeSystemPrompt(prompt, nil)
+	for _, marker := range []string{"LARK_CHANNEL=1", "LARK_CHANNEL_HOME", "LARK_CHANNEL_PROFILE", "LARK_CHANNEL_CONFIG", "LARKSUITE_CLI_CONFIG_DIR", "doctor/preflight"} {
+		if count := strings.Count(full, marker); count != 1 {
+			t.Errorf("%s occurs %d times", marker, count)
+		}
+	}
+	if !strings.Contains(full, `"text":"hello"`) {
+		t.Fatal("user text missing")
+	}
+}

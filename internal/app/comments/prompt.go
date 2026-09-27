@@ -1,9 +1,6 @@
 package comments
 
-import (
-	"regexp"
-	"strings"
-)
+import "strings"
 
 type Target struct {
 	FileToken string
@@ -121,7 +118,7 @@ func BuildPrompt(target Target, ctx CommentContext) string {
 		"",
 		"评论回复由 bridge 负责：不要调用云文档评论或回复接口，也不要给评论添加或删除 reaction；最终答案直接用纯文本交给 bridge。",
 		"",
-		"回复要求：直接用纯文本，不要 markdown（不要 ** __ # - * > ` 之类的标记），不要代码块；不要输出内部思考、内部分析、读取步骤、工具调用过程或工具日志。若用户要求解释依据，只说明用户可见的依据和结论。云文档评论框不渲染 markdown，会原样显示这些符号。",
+		"最终回复使用适合评论框的纯文本。代码、命令、路径和 identifier 必须保留原始字符、缩进及必要换行。不要输出内部思考、内部分析、读取步骤、工具调用过程或工具日志；解释依据时只提供用户可见的依据和结论。",
 	)
 	return strings.Join(parts, "\n")
 }
@@ -137,29 +134,4 @@ func commentReadInstruction(target Target) string {
 	default:
 		return "读取文件内容：这是 file 类型，不要使用 docs +fetch。请按当前可用的云空间文件工具或本机 lark-cli 支持的文件读取/下载命令处理同一 file_token；如果命令参数不兼容，不要在同一错误上反复重试。"
 	}
-}
-
-var (
-	headingPattern      = regexp.MustCompile(`(?m)^#{1,6}\s+`)
-	boldStarPattern     = regexp.MustCompile(`\*\*([^*]+)\*\*`)
-	boldUndersPattern   = regexp.MustCompile(`__([^_]+)__`)
-	italicStarPattern   = regexp.MustCompile(`\*([^*\n]+)\*`)
-	italicUndersPattern = regexp.MustCompile(`_([^_\n]+)_`)
-	inlineCodePattern   = regexp.MustCompile("`([^`]+)`")
-	listBulletPattern   = regexp.MustCompile(`(?m)^[-*]\s+`)
-	blockquotePattern   = regexp.MustCompile(`(?m)^>\s?`)
-	fenceOpenPattern    = regexp.MustCompile("```[a-zA-Z]*\n?")
-)
-
-func StripMarkdown(text string) string {
-	text = headingPattern.ReplaceAllString(text, "")
-	text = boldStarPattern.ReplaceAllString(text, "$1")
-	text = boldUndersPattern.ReplaceAllString(text, "$1")
-	text = italicStarPattern.ReplaceAllString(text, "$1")
-	text = italicUndersPattern.ReplaceAllString(text, "$1")
-	text = inlineCodePattern.ReplaceAllString(text, "$1")
-	text = listBulletPattern.ReplaceAllString(text, "")
-	text = blockquotePattern.ReplaceAllString(text, "")
-	text = fenceOpenPattern.ReplaceAllString(text, "")
-	return strings.ReplaceAll(text, "```", "")
 }

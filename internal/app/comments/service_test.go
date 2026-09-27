@@ -414,3 +414,47 @@ func textEvent(delta string) agentport.AgentEvent {
 func doneEvent() agentport.AgentEvent {
 	return agentport.AgentEvent{Type: agentport.EventDone, TerminationReason: agentport.TerminationNormal}
 }
+
+func TestHandleRepliesOnceWithCodeIntact(t *testing.T) {
+	for _, tc := range []struct{ name, answer, want string }{
+		{"code", "```go\n    foo_bar_baz := a * b\n    __init__()\n```", "    foo_bar_baz := a * b\n    __init__()\n"},
+		{"quoted code and command", "> ```sh\n> # comment\n> ```\nfind . -name *test*", "# comment\nfind . -name *test*"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ports := newFakeCommentPorts()
+			ports.target = Target{FileToken: "resolved-token", FileType: "docx"}
+			progress := textEvent("正在读取文档。")
+			progress.Phase = agentport.TextCommentary
+			executor := &fakeCommentExecutor{
+				execution: newFakeCommentExecution(
+					progress,
+					textEvent(tc.answer),
+					doneEvent(),
+				),
+			}
+			service := newTestService(t, ports, executor, nil)
+
+			result, err := service.Handle(context.Background(), testCommentInput())
+			if err != nil {
+				t.Fatalf("Handle returned error: %v", err)
+			}
+			if result.Status != ResultReplied || result.Reason != "completed" {
+				t.Fatalf("result = %#v, want completed reply", result)
+			}
+			if len(ports.replies) != 1 || ports.replies[0].text != tc.want {
+				t.Fatalf("reply = %#v, want stripped plain text", ports.replies)
+			}
+			if executor.calls != 1 {
+				t.Fatalf("executor calls = %d, want 1", executor.calls)
+			}
+			if !strings.Contains(executor.last.Policy.Prompt, "https://feishu.cn/docx/resolved-token") ||
+				!strings.Contains(executor.last.Policy.Prompt, "用户的问题：请总结这段") ||
+				!strings.Contains(executor.last.Policy.Prompt, "不要调用云文档评论或回复接口") {
+				t.Fatalf("prompt missing comment context:\n%s", executor.last.Policy.Prompt)
+			}
+			if executor.last.ScopeID != result.ExecutionScopeID || result.SessionScopeID != DocumentSessionScopeKey("resolved-token") {
+				t.Fatalf("scope mismatch: submit=%q result=%#v", executor.last.ScopeID, result)
+			}
+		})
+	}
+}

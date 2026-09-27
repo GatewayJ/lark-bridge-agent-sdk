@@ -17,8 +17,10 @@ func TestAdapterRunSpawnsWithEnvSystemPromptAndTranslatesEvents(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fake uses POSIX sh")
 	}
-	cwd := t.TempDir()
-	binary := writeFakeClaude(t, `
+	for _, sessionID := range []string{"", "existing-session"} {
+		t.Run("session="+sessionID, func(t *testing.T) {
+			cwd := t.TempDir()
+			binary := writeFakeClaude(t, `
 if [ "$1" = "-p" ] && [ "$2" = "hello" ] && [ "$3" = "--output-format" ] && [ "$4" = "stream-json" ] && [ "$5" = "--verbose" ] && [ "$6" = "--permission-mode" ] && [ "$7" = "acceptEdits" ] && [ "$8" = "--append-system-prompt" ]; then
   printf '%s' ok > args_ok.txt
 fi
@@ -30,55 +32,58 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 printf '%s\n' '{"type":"result","session_id":"sess-1","usage":{"input_tokens":3,"output_tokens":5}}'
 `)
 
-	adapter := New(Options{
-		Binary: binary,
-		LarkChannelEnv: map[string]string{
-			"LARK_CHANNEL_PROFILE": "claude-dev",
-		},
-	})
-	adapter.MergeEnv(map[string]string{"LARK_CHANNEL_PROFILE": "claude-projected"})
-	adapter.SetBotIdentity(agentport.AgentBotIdentity{OpenID: "ou_bot", Name: "Bridge Bot"})
-	run, err := adapter.Run(context.Background(), agentport.AgentRunOptions{
-		RunID:          "run-1",
-		Prompt:         "hello",
-		CWD:            cwd,
-		PermissionMode: permissions.ClaudePermissionAcceptEdits,
-	})
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
+			adapter := New(Options{
+				Binary: binary,
+				LarkChannelEnv: map[string]string{
+					"LARK_CHANNEL_PROFILE": "claude-dev",
+				},
+			})
+			adapter.MergeEnv(map[string]string{"LARK_CHANNEL_PROFILE": "claude-projected"})
+			adapter.SetBotIdentity(agentport.AgentBotIdentity{OpenID: "ou_bot", Name: "Bridge Bot"})
+			run, err := adapter.Run(context.Background(), agentport.AgentRunOptions{
+				RunID:          "run-1",
+				SessionID:      sessionID,
+				Prompt:         "hello",
+				CWD:            cwd,
+				PermissionMode: permissions.ClaudePermissionAcceptEdits,
+			})
+			if err != nil {
+				t.Fatalf("Run returned error: %v", err)
+			}
 
-	events := collectEvents(t, run)
-	if len(events) != 4 {
-		t.Fatalf("expected 4 events, got %#v", events)
-	}
-	if events[0].Type != agentport.EventSystem || events[0].SessionID == nil || *events[0].SessionID != "sess-1" {
-		t.Fatalf("unexpected system event: %#v", events[0])
-	}
-	if events[1].Type != agentport.EventText || events[1].Delta == nil || *events[1].Delta != "hello from claude" {
-		t.Fatalf("unexpected text event: %#v", events[1])
-	}
-	if events[2].Type != agentport.EventUsage || events[2].InputTokens == nil || *events[2].InputTokens != 3 {
-		t.Fatalf("unexpected usage event: %#v", events[2])
-	}
-	if events[3].Type != agentport.EventDone || events[3].SessionID == nil || *events[3].SessionID != "sess-1" {
-		t.Fatalf("unexpected done event: %#v", events[3])
-	}
+			events := collectEvents(t, run)
+			if len(events) != 4 {
+				t.Fatalf("expected 4 events, got %#v", events)
+			}
+			if events[0].Type != agentport.EventSystem || events[0].SessionID == nil || *events[0].SessionID != "sess-1" {
+				t.Fatalf("unexpected system event: %#v", events[0])
+			}
+			if events[1].Type != agentport.EventText || events[1].Delta == nil || *events[1].Delta != "hello from claude" {
+				t.Fatalf("unexpected text event: %#v", events[1])
+			}
+			if events[2].Type != agentport.EventUsage || events[2].InputTokens == nil || *events[2].InputTokens != 3 {
+				t.Fatalf("unexpected usage event: %#v", events[2])
+			}
+			if events[3].Type != agentport.EventDone || events[3].SessionID == nil || *events[3].SessionID != "sess-1" {
+				t.Fatalf("unexpected done event: %#v", events[3])
+			}
 
-	if got := readFile(t, filepath.Join(cwd, "args_ok.txt")); got != "ok" {
-		t.Fatalf("args marker = %q, want ok", got)
-	}
-	if got := readFile(t, filepath.Join(cwd, "lark_channel.txt")); got != "1" {
-		t.Fatalf("LARK_CHANNEL = %q, want 1", got)
-	}
-	if got := readFile(t, filepath.Join(cwd, "lark_profile.txt")); got != "claude-projected" {
-		t.Fatalf("LARK_CHANNEL_PROFILE = %q, want claude-projected", got)
-	}
-	systemPrompt := readFile(t, filepath.Join(cwd, "system_prompt.txt"))
-	for _, fragment := range []string{"lark-channel-bridge", "ou_bot", "Bridge Bot"} {
-		if !strings.Contains(systemPrompt, fragment) {
-			t.Fatalf("system prompt missing %q in:\n%s", fragment, systemPrompt)
-		}
+			if got := readFile(t, filepath.Join(cwd, "args_ok.txt")); got != "ok" {
+				t.Fatalf("args marker = %q, want ok", got)
+			}
+			if got := readFile(t, filepath.Join(cwd, "lark_channel.txt")); got != "1" {
+				t.Fatalf("LARK_CHANNEL = %q, want 1", got)
+			}
+			if got := readFile(t, filepath.Join(cwd, "lark_profile.txt")); got != "claude-projected" {
+				t.Fatalf("LARK_CHANNEL_PROFILE = %q, want claude-projected", got)
+			}
+			systemPrompt := readFile(t, filepath.Join(cwd, "system_prompt.txt"))
+			for _, fragment := range []string{"lark-channel-bridge", "ou_bot", "Bridge Bot", "bridge_context.chatType", "bridge_token", "bridge_user_action", "LARK_CHANNEL_PROFILE", "lark-cli auth login --device-code"} {
+				if !strings.Contains(systemPrompt, fragment) {
+					t.Fatalf("system prompt missing %q in:\n%s", fragment, systemPrompt)
+				}
+			}
+		})
 	}
 }
 

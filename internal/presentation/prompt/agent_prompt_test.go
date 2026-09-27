@@ -174,3 +174,39 @@ func readPromptSection[T any](t *testing.T, promptText string, tag string) T {
 func count(input string, needle string) int {
 	return strings.Count(input, needle)
 }
+
+func TestPromptObjectFieldsAndAttachmentStates(t *testing.T) {
+	input := BuildAgentPromptInput{
+		Context:          BridgePromptContext{ChatID: "oc_chat", ChatType: "p2p"},
+		UserInput:        "foo_bar_baz\n__init__ a * b *.go",
+		QuotedMessages:   []BridgePromptQuotedMessage{{MessageID: "om_quote", SenderID: "ou_sender", RawContentType: "text", Content: "引用原文"}},
+		InteractiveCards: []BridgePromptInteractiveCard{{MessageID: "om_card", Content: map[string]any{"schema": "2.0"}}},
+		Attachments: []BridgePromptAttachment{
+			{Path: "/tmp/a.go", Kind: "file", Decision: "accepted"},
+			{Kind: "file", Decision: "rejected", RejectionReason: "file-too-large"},
+			{Kind: "video", Decision: "skipped", RejectionReason: "unsupported-kind"},
+		},
+	}
+	prompt := BuildAgentPrompt(input)
+	context := readPromptSection[map[string]any](t, prompt, "bridge_context")
+	if context["chatId"] != "oc_chat" || context["chatType"] != "p2p" {
+		t.Fatalf("context: %#v", context)
+	}
+	quotes := readPromptSection[[]BridgePromptQuotedMessage](t, prompt, "quoted_messages")
+	if len(quotes) != 1 || quotes[0] != input.QuotedMessages[0] {
+		t.Fatalf("quotes: %#v", quotes)
+	}
+	cards := readPromptSection[[]BridgePromptInteractiveCard](t, prompt, "interactive_cards")
+	if len(cards) != 1 || cards[0].Content.(map[string]any)["schema"] != "2.0" {
+		t.Fatalf("cards: %#v", cards)
+	}
+	user := readPromptSection[userInputSection](t, prompt, "user_input")
+	if user.Text != input.UserInput || len(user.Attachments) != 3 {
+		t.Fatalf("user input: %#v", user)
+	}
+	for i, attachment := range user.Attachments {
+		if attachment != input.Attachments[i] {
+			t.Fatalf("attachment: %#v", attachment)
+		}
+	}
+}

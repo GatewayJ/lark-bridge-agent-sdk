@@ -1042,7 +1042,8 @@ func (i *managedLarkIntake) buildMessagePrompt(ctx context.Context, messages []a
 			identity = got
 		}
 	}
-	return BuildAgentPrompt(BuildAgentPromptInput{
+	// CLI adapter 为每轮加入完整运行规则。
+	return BuildAgentPromptRaw(BuildAgentPromptInput{
 		Context: BridgePromptContext{
 			ChatID:     first.ChatID,
 			ChatType:   string(first.ChatType),
