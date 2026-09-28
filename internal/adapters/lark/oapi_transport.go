@@ -1095,10 +1095,10 @@ func (t *OAPITransport) renderOAPIQuoteContent(ctx context.Context, message *lar
 	case "merge_forward":
 		return t.renderOAPIForwardedMessages(ctx, message, children, remaining, visited)
 	case "interactive":
-		flattened, _ := larknormalize.ParseContent(msgType, raw)
+		flattened, _ := parseOAPIMessageContent(msgType, raw)
 		return expandOAPIInteractiveCard(flattened, raw), nil
 	default:
-		content, _ := larknormalize.ParseContent(msgType, raw)
+		content, _ := parseOAPIMessageContent(msgType, raw)
 		return content, nil
 	}
 }
@@ -1435,6 +1435,15 @@ func (t *OAPITransport) mapMessage(msg *channeltypes.NormalizedMessage) *appinta
 	if threadID != "" {
 		mode = appintake.ChatModeTopic
 	}
+	content, resources := msg.Content, msg.Resources
+	if msg.RawContentType == "post" && (content == "" || content == "[rich text message]") {
+		if raw, ok := rawMessageContent(msg.RawEvent).(string); ok {
+			parsed, extracted := parseOAPIMessageContent("post", raw)
+			if parsed != "" && parsed != "[rich text message]" {
+				content, resources = parsed, extracted
+			}
+		}
+	}
 	return &appintake.MessageInput{
 		MessageID:        msg.MessageID,
 		ChatID:           msg.ChatID,
@@ -1446,10 +1455,10 @@ func (t *OAPITransport) mapMessage(msg *channeltypes.NormalizedMessage) *appinta
 		ReplyToMessageID: parentID,
 		Sender:           appintake.Actor{OpenID: msg.UserID},
 		SenderType:       senderTypeFromRawEvent(msg.RawEvent),
-		Content:          msg.Content,
+		Content:          content,
 		RawContentType:   msg.RawContentType,
 		RawContent:       rawMessageContent(msg.RawEvent),
-		Resources:        mapOAPIResources(msg.Resources),
+		Resources:        mapOAPIResources(resources),
 		Mentions:         mapOAPIMentions(msg.Mentions),
 		MentionAll:       msg.MentionAll,
 		MentionedBot:     msg.MentionedBot,
