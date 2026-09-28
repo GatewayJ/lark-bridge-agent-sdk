@@ -122,6 +122,7 @@ type CardRolloverPolicy struct {
 }
 
 func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
+	separateFinal := input.FinalAnswerOnly
 	state := cardrender.NewRunState(cardrender.RunStateInput{StartedAt: input.StartedAt})
 	cardStream := newCardStreamState(state)
 	markdownStream := newMarkdownStreamState()
@@ -131,8 +132,12 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 	lastCardUpdate := time.Time{}
 	lastMarkdownUpdate := time.Time{}
 	startProgress := func() error {
+		progressState := state
+		if separateFinal {
+			progressState = progressOnlyState(state)
+		}
 		if normalizeReplyMode(input.ReplyMode) == ReplyCard {
-			result, err := sendCard(ctx, input, state)
+			result, err := sendCard(ctx, input, progressState)
 			if err != nil {
 				return err
 			}
@@ -141,7 +146,11 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 		}
 		if normalizeReplyMode(input.ReplyMode) == ReplyMarkdown {
 			state = cardrender.Reduce(state, cardrender.Event{Type: cardrender.EventSystem})
-			if err := markdownStream.start(ctx, input, state); err != nil {
+			progressState = state
+			if separateFinal {
+				progressState = progressOnlyState(state)
+			}
+			if err := markdownStream.start(ctx, input, progressState); err != nil {
 				return err
 			}
 			lastMarkdownUpdate = time.Now()
@@ -224,14 +233,24 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 				armIdleTimer()
 				cardEvent := toCardEvent(event)
 				state = cardrender.Reduce(state, cardEvent)
+				if separateFinal && event.Type == agentport.EventText && event.Phase == agentport.TextFinalAnswer {
+					continue
+				}
 				cardStream.reduce(cardEvent)
+				progressState := state
+				if separateFinal {
+					progressState = progressOnlyState(state)
+				}
+				if separateFinal && !isActive(state) {
+					goto done
+				}
 				if !input.DeferUntilDone && shouldStreamCardUpdate(input, cardStream.messageID, lastCardUpdate) {
 					if err := cardStream.flush(ctx, input); err == nil {
 						lastCardUpdate = time.Now()
 					}
 				}
-				if !input.DeferUntilDone && !markdownUpdateFailed && shouldStreamMarkdownUpdate(input, markdownStream.messageID, lastMarkdownUpdate, state) {
-					if err := markdownStream.flush(ctx, input, state); err == nil {
+				if !input.DeferUntilDone && !markdownUpdateFailed && shouldStreamMarkdownUpdate(input, markdownStream.messageID, lastMarkdownUpdate, progressState) {
+					if err := markdownStream.flush(ctx, input, progressState); err == nil {
 						lastMarkdownUpdate = time.Now()
 					} else if markdownStream.messageID != "" {
 						markdownUpdateFailed = true
@@ -264,6 +283,19 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 			return state, err
 		}
 	default:
+	}
+	if separateFinal && !input.FinalAnswerOnly {
+		progress := progressOnlyState(state)
+		if markdownStream.messageID != "" {
+			settleMarkdownMessage(ctx, input, markdownStream.messageID, markdownStateDelta(markdownStream.segmentBase, progress))
+		}
+		if cardStream.messageID != "" {
+			_ = updateRunCard(ctx, input, progress, cardStream.messageID)
+		}
+		input.FinalAnswerOnly = true
+		input.DeferUntilDone = true
+		cardStream = newCardStreamState(state)
+		markdownStream = newMarkdownStreamState()
 	}
 	finalCardState := state
 	if input.FinalAnswerOnly && state.Status == cardrender.StatusSucceeded && !hasCardContent(finalAnswerOnlyState(state)) {
@@ -451,6 +483,18 @@ func renderRunState(input Input, state cardrender.RunState) cardrender.RunState 
 	filtered.Blocks = make([]cardrender.Block, 0, len(state.Blocks))
 	for _, block := range state.Blocks {
 		if block.Kind == cardrender.BlockTool {
+			continue
+		}
+		filtered.Blocks = append(filtered.Blocks, block)
+	}
+	return filtered
+}
+
+func progressOnlyState(state cardrender.RunState) cardrender.RunState {
+	filtered := state
+	filtered.Blocks = make([]cardrender.Block, 0, len(state.Blocks))
+	for _, block := range state.Blocks {
+		if block.Kind == cardrender.BlockText && block.Phase == cardrender.TextFinalAnswer {
 			continue
 		}
 		filtered.Blocks = append(filtered.Blocks, block)

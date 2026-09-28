@@ -360,7 +360,7 @@ func TestPresentCardModeCanDeferAndSendFinalAnswerOnly(t *testing.T) {
 	}
 }
 
-func TestPresentRestoresToolsWhenProcessFailsDuringFinalFlush(t *testing.T) {
+func TestPresentKeepsFinalSeparateWhenProcessFailsDuringFinalFlush(t *testing.T) {
 	for _, mode := range []ReplyMode{ReplyMarkdown, ReplyCard, ReplyText} {
 		t.Run(string(mode), func(t *testing.T) {
 			ch := &fakeChannel{}
@@ -397,11 +397,8 @@ func TestPresentRestoresToolsWhenProcessFailsDuringFinalFlush(t *testing.T) {
 			} else {
 				body = ch.messages[0].Content.Markdown
 			}
-			if !strings.Contains(body, "Bash") || !strings.Contains(body, "final answer") {
+			if strings.Contains(body, "Bash") || !strings.Contains(body, "final answer") {
 				t.Fatalf("final reply = %q", body)
-			}
-			if mode == ReplyCard && !strings.Contains(body, "tool output") {
-				t.Fatalf("final card lost tool output: %q", body)
 			}
 		})
 	}

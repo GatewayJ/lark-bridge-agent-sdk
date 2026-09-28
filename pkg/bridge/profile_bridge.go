@@ -14,6 +14,7 @@ import (
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/processcontrol"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/secretstore"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/apppaths"
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/domain/profile"
 )
 
 // ProfileBridgeOptions selects the profile and host integrations used by
@@ -321,6 +322,7 @@ func profileBridgeClient(cfg configstore.RuntimeConfig, paths apppaths.Paths, la
 			Binary:             codex.BinaryPath,
 			ProfileStateDir:    paths.ProfileDir,
 			DefaultWorkingDir:  defaultWorkingDir,
+			MaxProcesses:       profile.MaxConcurrentRuns(cfg.Preferences),
 			SessionStorePath:   paths.SessionsFile,
 			SessionCatalogPath: paths.SessionsFile + ".catalog.json",
 			DefaultAccess:      defaultAccess,
@@ -343,6 +345,7 @@ func profileBridgeClient(cfg configstore.RuntimeConfig, paths apppaths.Paths, la
 		}
 		client, err := NewClaudeClient(ClaudeClientOptions{
 			DefaultWorkingDir:  defaultWorkingDir,
+			MaxProcesses:       profile.MaxConcurrentRuns(cfg.Preferences),
 			SessionStorePath:   paths.SessionsFile,
 			SessionCatalogPath: paths.SessionsFile + ".catalog.json",
 			DefaultAccess:      defaultAccess,

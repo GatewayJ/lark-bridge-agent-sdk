@@ -14,7 +14,6 @@ import (
 const (
 	defaultUpdateThrottle = 600 * time.Millisecond
 	toolOutputMax         = 1200
-	textMax               = 1200
 )
 
 type PublisherOptions struct {
@@ -134,20 +133,17 @@ func (p *Publisher) Enqueue(eventType string, content any) {
 	if p == nil {
 		return
 	}
-	payload, err := json.Marshal(content)
-	if err != nil {
-		payload = []byte(fmt.Sprint(content))
-	}
+	events, err := boundedEvents(eventType, content, p.now().UnixMilli())
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.disabled || p.ref.COTID == "" || p.ref.MessageID == "" {
 		return
 	}
-	p.buffer = append(p.buffer, Event{
-		EventType: eventType,
-		Content:   string(payload),
-		Timestamp: p.now().UnixMilli(),
-	})
+	if err != nil {
+		p.disableLocked(err.Error())
+		return
+	}
+	p.buffer = append(p.buffer, events...)
 	if p.timer == nil && !p.flushing {
 		p.timer = time.AfterFunc(p.updateThrottle, func() {
 			_ = p.Flush(context.Background())
@@ -196,8 +192,9 @@ func (p *Publisher) Flush(ctx context.Context) error {
 		}
 		p.flushing = true
 		ref := p.ref
-		events := append([]Event(nil), p.buffer...)
-		p.buffer = nil
+		count := min(len(p.buffer), updateEventLimit)
+		events := append([]Event(nil), p.buffer[:count]...)
+		p.buffer = p.buffer[count:]
 		if p.timer != nil {
 			p.timer.Stop()
 			p.timer = nil
@@ -312,7 +309,7 @@ func ConsumeEvents(ctx context.Context, events <-chan agentport.AgentEvent, publ
 				}
 				publisher.Enqueue("REASONING_MESSAGE_CONTENT", map[string]any{
 					"messageId": reasoningMessageID,
-					"delta":     truncate(value(evt.Delta), textMax),
+					"delta":     value(evt.Delta),
 				})
 			case agentport.EventToolUse:
 				closeReasoning()
@@ -396,7 +393,7 @@ func ConsumeEvents(ctx context.Context, events <-chan agentport.AgentEvent, publ
 				}
 				publisher.Enqueue("TEXT_MESSAGE_CONTENT", map[string]any{
 					"messageId": textMessageID,
-					"delta":     truncate(value(evt.Delta), textMax),
+					"delta":     value(evt.Delta),
 				})
 			case agentport.EventDone, agentport.EventError:
 				closeReasoning()

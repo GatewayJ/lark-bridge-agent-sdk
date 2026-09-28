@@ -681,10 +681,7 @@ func TestManagedLarkIntakePresentRunSendsCOTDegradedNoticeAndFinalReply(t *testi
 		t.Fatalf("degraded notice = %q", messages[0].Content.Markdown)
 	}
 	final := messages[1].Content.Markdown
-	if updates := transport.UpdatedMessageSnapshot(); len(updates) > 0 {
-		final = updates[len(updates)-1].Content.Markdown
-	}
-	if !strings.Contains(final, "final answer") || !strings.Contains(final, "cat document") {
+	if !strings.Contains(final, "final answer") || strings.Contains(final, "cat document") {
 		t.Fatalf("final reply = %q", final)
 	}
 }

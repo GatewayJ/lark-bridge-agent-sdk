@@ -19,9 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	larksdk "github.com/larksuite/oapi-sdk-go/v3"
-	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
-	"github.com/larksuite/oapi-sdk-go/v3/scene/registration"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/configstore"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/larkcli"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/runtimecoord"
@@ -29,7 +26,11 @@ import (
 	appworkspace "github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/workspace"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/compat/apppaths"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/domain/permissions"
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/domain/profile"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/pkg/bridge"
+	larksdk "github.com/larksuite/oapi-sdk-go/v3"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	"github.com/larksuite/oapi-sdk-go/v3/scene/registration"
 	"golang.org/x/term"
 )
 
@@ -3034,6 +3035,7 @@ func buildStartClient(cfg configstore.RuntimeConfig, paths apppaths.Paths, larkE
 			Binary:             codex.BinaryPath,
 			ProfileStateDir:    paths.ProfileDir,
 			DefaultWorkingDir:  defaultWorkingDir,
+			MaxProcesses:       profile.MaxConcurrentRuns(cfg.Preferences),
 			SessionStorePath:   paths.SessionsFile,
 			SessionCatalogPath: paths.SessionsFile + ".catalog.json",
 			DefaultAccess:      defaultAccess,
@@ -3056,6 +3058,7 @@ func buildStartClient(cfg configstore.RuntimeConfig, paths apppaths.Paths, larkE
 		}
 		client, err := bridge.NewClaudeClient(bridge.ClaudeClientOptions{
 			DefaultWorkingDir:  defaultWorkingDir,
+			MaxProcesses:       profile.MaxConcurrentRuns(cfg.Preferences),
 			SessionStorePath:   paths.SessionsFile,
 			SessionCatalogPath: paths.SessionsFile + ".catalog.json",
 			DefaultAccess:      defaultAccess,

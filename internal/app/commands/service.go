@@ -2569,14 +2569,7 @@ func parseClampedInt(raw string, current int, min int, max int, allowZero bool) 
 }
 
 func getMaxConcurrentRuns(prefs map[string]any) int {
-	raw, ok := numberPreference(prefs["maxConcurrentRuns"])
-	if !ok || raw < 1 {
-		return 10
-	}
-	if raw > 50 {
-		return 50
-	}
-	return int(raw)
+	return profile.MaxConcurrentRuns(prefs)
 }
 
 func getRunIdleTimeoutMinutes(prefs map[string]any) int {
