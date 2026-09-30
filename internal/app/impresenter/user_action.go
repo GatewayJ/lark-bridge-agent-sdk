@@ -35,8 +35,22 @@ func (d *actionDelivery) send(ctx context.Context, input Input, event agentport.
 	if event.Name != nil && *event.Name == "authorization" && !input.PrivateChat {
 		body = "用户身份授权需要在私聊中完成，请私信我后继续。"
 	}
-	_, err := input.Channel.SendMessage(ctx, SendMessageRequest{ChatID: input.ChatID, Options: input.Options, Content: MessageContent{Markdown: body}})
-	if err != nil {
+	var err error
+	isCard := event.Name != nil && *event.Name == "card"
+	if isCard {
+		card, ok := event.Input.(map[string]any)
+		if input.SendAgentCard == nil || !ok {
+			err = errors.New("interactive card delivery is unavailable")
+		} else {
+			err = input.SendAgentCard(ctx, card)
+		}
+		if err != nil {
+			_, _ = input.Channel.SendMessage(ctx, SendMessageRequest{ChatID: input.ChatID, Options: input.Options, Content: MessageContent{Markdown: "交互卡片发送失败，请通过文字回复继续。"}})
+		}
+	} else {
+		_, err = input.Channel.SendMessage(ctx, SendMessageRequest{ChatID: input.ChatID, Options: input.Options, Content: MessageContent{Markdown: body}})
+	}
+	if err != nil && !isCard {
 		// A prompt must remain visible outside the CoT drawer. Try an ordinary
 		// card if message delivery fails; neither path finishes the agent run.
 		card := cardkit.RenderCardView(cardrender.CardView{Summary: "需要用户操作", Elements: []cardrender.CardElement{{Kind: cardrender.ElementMarkdown, Text: body}}})

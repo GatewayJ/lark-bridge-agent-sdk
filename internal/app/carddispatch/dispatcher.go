@@ -38,6 +38,7 @@ const (
 )
 
 type Dispatcher struct {
+	PendingVerifier           CallbackVerifier
 	Verifier                  CallbackVerifier
 	CommandHandler            CommandHandler
 	Enqueuer                  PromptEnqueuer
@@ -104,6 +105,7 @@ type ActiveRun struct {
 }
 
 type CallbackVerifyExpected struct {
+	Value             map[string]any
 	RunID             string
 	Scope             string
 	ChatID            string
@@ -275,6 +277,19 @@ func (d Dispatcher) resolveScope(ctx context.Context, input appintake.CardAction
 
 func (d Dispatcher) verify(ctx context.Context, payload map[string]any, scope string, input appintake.CardActionInput, action string) error {
 	token := stringField(payload, BridgeTokenKey)
+	if action == "agent_callback" && d.PendingVerifier != nil {
+		if token == "" {
+			return ErrCallbackAuthMissing
+		}
+		result := d.PendingVerifier.VerifyCallback(ctx, token, CallbackVerifyExpected{
+			Scope: scope, ChatID: input.ChatID, OperatorOpenID: input.Operator.OpenID,
+			Action: action, Value: commandValue(payload),
+		})
+		if !result.OK {
+			return errors.Join(ErrCallbackDenied, errors.New(result.Reason))
+		}
+		return nil
+	}
 	if d.Verifier == nil || token == "" {
 		return ErrCallbackAuthMissing
 	}

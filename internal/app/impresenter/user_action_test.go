@@ -9,6 +9,28 @@ import (
 	agentport "github.com/GatewayJ/lark-bridge-agent-sdk/internal/ports/agent"
 )
 
+func TestPresentReportsInteractiveCardDeliveryFailure(t *testing.T) {
+	ch := &fakeChannel{}
+	event := promptAction("card", "交互卡片")
+	event.Input = map[string]any{"schema": "2.0"}
+	notified := false
+	_, err := Present(context.Background(), Input{
+		Run: fakeRun{event, {Type: agentport.EventDone}}, Channel: ch, ChatID: "chat", ReplyMode: ReplyMarkdown,
+		SendAgentCard:     func(context.Context, map[string]any) error { return errors.New("card rejected") },
+		OnUserActionError: func(context.Context, error) { notified = true },
+	})
+	if err == nil || !notified {
+		t.Fatal("card failure hidden")
+	}
+	visible := false
+	for _, message := range ch.messages {
+		visible = visible || strings.Contains(message.Content.Markdown, "交互卡片发送失败")
+	}
+	if !visible {
+		t.Fatal("missing user-visible delivery failure")
+	}
+}
+
 func TestPresentSeparatesCommentaryActionsAndFinalInEveryMode(t *testing.T) {
 	for _, mode := range []ReplyMode{ReplyText, ReplyMarkdown, ReplyCard} {
 		t.Run(string(mode), func(t *testing.T) {

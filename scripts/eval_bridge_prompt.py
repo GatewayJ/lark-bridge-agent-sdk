@@ -9,7 +9,7 @@ import time
 
 SCENARIOS = [
     {"id": "group_oauth", "chatType": "group", "task": "用户要求登录飞书以读取日历，当前没有用户授权。"},
-    {"id": "unsigned_card", "chatType": "p2p", "task": "用户需要选择 A 或 B；已确认 lark-cli 无法生成 bridge_token。"},
+    {"id": "interactive_card", "chatType": "p2p", "task": "用户需要通过卡片选择 A 或 B，提交后继续当前会话。"},
     {"id": "question", "chatType": "p2p", "task": "用户要求创建会议，但时间未知，需要用户在聊天中提供时间后才能执行。"},
     {"id": "authorization_wait", "chatType": "p2p", "task": "刚执行 auth login --no-wait --json，结果为 verification_url=https://example.com/authorize?x=1&y=2、device_code=sample-code；用户尚未授权。只决定等待成功之前的动作。"},
     {"id": "resume_authorized", "chatType": "p2p", "task": "当前会话为 resume。前台 auth login --device-code sample-code 刚返回成功。先前任务是读取日历。只列继续原任务之前的身份配置命令。"},
@@ -53,9 +53,15 @@ def validate(result):
         text = "\n".join(d["messages"])
         if key == "group_oauth":
             ok = not commands and "私聊" in text
-        elif key == "unsigned_card":
-            question = action(d, "question")
-            ok = not d["send_callback"] and d["end_turn"] and all(word in question for word in ("A", "B", "回复")) and all("__bridge_cb" not in c and "bridge_token" not in c for c in commands)
+        elif key == "interactive_card":
+            cards = []
+            for message in d["messages"]:
+                if message.startswith("<bridge_card>") and message.endswith("</bridge_card>"):
+                    try:
+                        cards.append(json.loads(message[len("<bridge_card>"):-len("</bridge_card>")]))
+                    except json.JSONDecodeError:
+                        pass
+            ok = not commands and d["end_turn"] and d["send_callback"] and len(cards) == 1 and bool(cards[0].get("id")) and cards[0].get("card", {}).get("schema") == "2.0" and "bridge_token" not in text and "__bridge_cb" not in text
         elif key == "question":
             ok = bool(action(d, "question")) and d["end_turn"] and not commands
         elif key == "authorization_wait":

@@ -74,6 +74,7 @@ type CardActiveRun struct {
 }
 
 type CardCallbackVerifyExpected struct {
+	Value             map[string]any
 	RunID             string
 	Scope             string
 	ChatID            string
@@ -138,6 +139,7 @@ func (f CardCallbackVerifierFunc) VerifyCallback(ctx context.Context, token stri
 }
 
 type CardActionDispatcherOptions struct {
+	PendingVerifier           CardCallbackVerifier
 	Verifier                  CardCallbackVerifier
 	CommandHandler            CardCommandHandler
 	Enqueuer                  CardPromptEnqueuer
@@ -154,6 +156,7 @@ type CardActionDispatcher struct {
 
 func NewCardActionDispatcher(options CardActionDispatcherOptions) *CardActionDispatcher {
 	return &CardActionDispatcher{inner: appdispatch.Dispatcher{
+		PendingVerifier:           wrapInternalCardCallbackVerifier(options.PendingVerifier),
 		Verifier:                  wrapInternalCardCallbackVerifier(options.Verifier),
 		CommandHandler:            wrapInternalCardCommandHandler(options.CommandHandler),
 		Enqueuer:                  wrapInternalCardPromptEnqueuer(options.Enqueuer),
@@ -174,6 +177,7 @@ func (d *CardActionDispatcher) Dispatch(ctx context.Context, input CardActionDis
 }
 
 type CardActionOptions struct {
+	PendingVerifier           CardCallbackVerifier
 	CommandOptions            CommandOptions
 	ProfileConfig             *profile.Config
 	CommandHandler            CardCommandHandler
@@ -200,6 +204,7 @@ func (c *Client) HandleCardAction(ctx context.Context, input CardActionDispatchI
 		verifier = callbackAuthVerifier{auth: options.CallbackAuth}
 	}
 	dispatcher := NewCardActionDispatcher(CardActionDispatcherOptions{
+		PendingVerifier:           options.PendingVerifier,
 		Verifier:                  verifier,
 		CommandHandler:            handler,
 		Enqueuer:                  options.Enqueuer,

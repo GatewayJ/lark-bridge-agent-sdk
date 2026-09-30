@@ -706,10 +706,11 @@ func (i *managedLarkIntake) dispatchCardActionNow(ctx context.Context, input Car
 	commandOptions := i.currentCommandOptions()
 	commandOptions.GlobalIdleTimeout = runtimeConfig.idleTimeout
 	result, err := i.client.HandleCardAction(ctx, input, CardActionOptions{
-		CommandOptions: commandOptions,
-		ProfileConfig:  &runtimeConfig.profile,
-		CallbackAuth:   i.callbackAuth,
-		ActiveRuns:     i,
+		PendingVerifier: i.pendingCardVerifier(),
+		CommandOptions:  commandOptions,
+		ProfileConfig:   &runtimeConfig.profile,
+		CallbackAuth:    i.callbackAuth,
+		ActiveRuns:      i,
 		Enqueuer: CardPromptEnqueuerFunc(func(ctx context.Context, event LarkNormalizedEvent) error {
 			return i.HandleLarkEvent(ctx, event)
 		}),
@@ -862,6 +863,7 @@ func (i *managedLarkIntake) handleBatch(ctx context.Context, batch appintake.Bat
 		InputPreview:  strings.TrimSpace(last.Content),
 		PrivateChat:   first.ChatType == appintake.ChatTypeP2P,
 		RenderOptions: i.renderOptions(run.Metadata(), first),
+		SendAgentCard: i.agentCardSender(run.Metadata(), first, toPresenterSendOptions(managedReplyOptions(last, batch.Scope))),
 	})
 	return err
 }
@@ -877,6 +879,7 @@ func (i *managedLarkIntake) presenterChannel() appimpresenter.Channel {
 }
 
 type managedPresentInput struct {
+	SendAgentCard func(context.Context, map[string]any) error
 	Run           appimpresenter.Run
 	ChatID        string
 	Options       appimpresenter.SendOptions
@@ -910,6 +913,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 			RenderOptions:     input.RenderOptions,
 			PrivateChat:       input.PrivateChat,
 			OnUserActionError: actionError,
+			SendAgentCard:     input.SendAgentCard,
 		})
 	}
 	publisher := appcot.NewPublisher(appcot.PublisherOptions{
@@ -941,6 +945,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 			RenderOptions:     input.RenderOptions,
 			PrivateChat:       input.PrivateChat,
 			OnUserActionError: actionError,
+			SendAgentCard:     input.SendAgentCard,
 		})
 	}
 	fanoutCtx, cancelFanout := context.WithCancel(ctx)
@@ -965,6 +970,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 		RenderOptions:     input.RenderOptions,
 		PrivateChat:       input.PrivateChat,
 		OnUserActionError: actionError,
+		SendAgentCard:     input.SendAgentCard,
 		ResumeProgress:    publisher.Degraded(),
 		OnResumeProgress:  notifyFallback,
 		BeforeFinal: func(ctx context.Context, _ appcardrender.RunState) error {

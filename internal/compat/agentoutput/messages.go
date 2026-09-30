@@ -20,6 +20,18 @@ const actionEnd = "</bridge_user_action>"
 // Ordinary prose, quoted examples, and tool output are not classified by words.
 func UserAction(text string) (agent.AgentEvent, bool) {
 	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "<bridge_card>") && strings.HasSuffix(text, "</bridge_card>") {
+		var request struct {
+			ID   string         `json:"id"`
+			Card map[string]any `json:"card"`
+		}
+		body := strings.TrimSuffix(strings.TrimPrefix(text, "<bridge_card>"), "</bridge_card>")
+		if json.Unmarshal([]byte(body), &request) != nil || request.ID == "" || request.Card == nil {
+			return agent.AgentEvent{}, false
+		}
+		kind, message := "card", "交互卡片"
+		return agent.AgentEvent{Type: agent.EventUserAction, ID: &request.ID, Name: &kind, Delta: &message, Input: request.Card}, true
+	}
 	if !strings.HasPrefix(text, actionStart) || !strings.HasSuffix(text, actionEnd) {
 		return agent.AgentEvent{}, false
 	}

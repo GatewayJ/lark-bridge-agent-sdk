@@ -107,6 +107,7 @@ type Input struct {
 	FinalAnswerOnly   bool
 	PrivateChat       bool
 	OnUserActionError func(context.Context, error)
+	SendAgentCard     func(context.Context, map[string]any) error
 	BeforeFinal       func(context.Context, cardrender.RunState) error
 	// ResumeProgress restores ordinary progress rendering if a separate process
 	// presenter fails. OnResumeProgress runs once before the restored output.

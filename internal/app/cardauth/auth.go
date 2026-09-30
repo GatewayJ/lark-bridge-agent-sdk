@@ -28,6 +28,7 @@ type Options struct {
 }
 
 type Auth struct {
+	pending     *pendingStore
 	keys        []Key
 	nonceStore  *NonceStore
 	now         func() time.Time
@@ -107,7 +108,16 @@ func New(options Options) (*Auth, error) {
 	if store == nil {
 		store = NewNonceStore("")
 	}
+	pendingPath := ""
+	if store.path != "" {
+		pendingPath = store.path + ".pending"
+	}
+	pending, err := newPendingStore(pendingPath)
+	if err != nil {
+		return nil, err
+	}
 	return &Auth{
+		pending:     pending,
 		keys:        keys,
 		nonceStore:  store,
 		now:         now,

@@ -7,6 +7,29 @@ import (
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/ports/agent"
 )
 
+func TestCardRequestKeepsPayloadAndDeduplicatesFinalEcho(t *testing.T) {
+	message := `<bridge_card>{"id":"app-form","card":{"schema":"2.0","body":{"elements":[]}}}</bridge_card>`
+	s := &Stream{}
+	events := s.Push(text(message, agent.TextCommentary))
+	events = append(events, s.Finish(&message, true)...)
+	if len(events) != 1 || events[0].Type != agent.EventUserAction || value(events[0].Name) != "card" {
+		t.Fatalf("events=%+v", events)
+	}
+	card, ok := events[0].Input.(map[string]any)
+	if !ok || card["schema"] != "2.0" {
+		t.Fatalf("card=%+v", events[0].Input)
+	}
+	for _, candidate := range []string{"Example: " + message, "```\n" + message + "\n```", `<bridge_card>{"card":{}}</bridge_card>`} {
+		if _, ok := UserAction(candidate); ok {
+			t.Fatal("unmarked or incomplete request accepted")
+		}
+	}
+	tool := s.Push(agent.AgentEvent{Type: agent.EventToolResult, Output: &message})
+	if len(tool) != 1 || tool[0].Type != agent.EventToolResult {
+		t.Fatal("tool output became a card request")
+	}
+}
+
 func TestStreamSeparatesProgressFromAuthoritativeFinal(t *testing.T) {
 	s := &Stream{}
 	var events []agent.AgentEvent

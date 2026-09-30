@@ -58,7 +58,7 @@ func TestPrefixBridgeSystemPrompt(t *testing.T) {
 func TestBridgeRulesCoverActionAndEnvironmentRequirements(t *testing.T) {
 	for _, rule := range []string{
 		"chatId", "chatType", "<quoted_messages>", "<interactive_cards>", "JSON 数组", "rejectionReason", "skipped",
-		"结构化 @", "没有新信息", "schema: \"2.0\"", "SIGNED_TOKEN_FROM_LARK_CLI", "禁止猜测、伪造、复用或手写", "文字回复选择",
+		"结构化 @", "没有新信息", "schema: \"2.0\"", "<bridge_card>", "im +messages-send", "form_action_type", "独立于本轮执行", "禁止猜测、伪造、复用或手写", "文字回复选择",
 		"LARK_CHANNEL_CONFIG", "以命令返回结果为准", "doctor/preflight",
 		"authorization", "confirmation", "question", "相同 `id`", "发送后结束本轮", "文档评论",
 		"群聊（含 topic 群）", "--no-wait --json", "verification_url", "device_code", "前台等待", "strict-mode off", "default-as auto", "/stop",
