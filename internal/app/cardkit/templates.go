@@ -132,10 +132,10 @@ func StatusCard(info StatusInfo) JSONCard {
 }
 
 func ResumeCard(cwd string, entries []ResumeEntry) JSONCard {
-	elements := []any{divMD(fmt.Sprintf("当前 cwd：`%s`", escapeCode(cwd)))}
+	elements := []any{markdown(fmt.Sprintf("当前 cwd：`%s`", escapeCode(cwd)))}
 	if len(entries) == 0 {
-		elements = append(elements, hr(), divMD("此 cwd 下没有历史会话。"))
-		return shell("🔁 恢复历史会话", elements)
+		elements = append(elements, hr(), markdown("此 cwd 下没有历史会话。"))
+		return card2("🔁 恢复历史会话", elements)
 	}
 	elements = append(elements, hr())
 	for i, entry := range entries {
@@ -151,19 +151,19 @@ func ResumeCard(cwd string, entries []ResumeEntry) JSONCard {
 		if displayID == "" {
 			displayID = entry.SessionID
 		}
-		elements = append(elements, divMD(fmt.Sprintf("**%d.** %s%s\n`%s` · %s · %s", i+1, escapeMD(entry.Preview), marker, shortID(displayID), entry.RelTime, escapeMD(detail))))
+		elements = append(elements, markdown(fmt.Sprintf("**%d.** %s%s\n`%s` · %s · %s", i+1, escapeMD(entry.Preview), marker, shortID(displayID), entry.RelTime, escapeMD(detail))))
 		text := "▸ 恢复此会话"
 		style := "primary"
 		if entry.Current {
 			text = "已是当前会话"
 			style = "default"
 		}
-		elements = append(elements, actions([]ButtonSpec{{Text: text, Value: map[string]any{"cmd": "resume.use", "arg": entry.SessionID}, Style: style}}))
+		elements = append(elements, callbackButton(text, style, map[string]any{"cmd": "resume.use", "arg": entry.SessionID}, "", false))
 		if i < len(entries)-1 {
 			elements = append(elements, hr())
 		}
 	}
-	return shell("🔁 恢复历史会话", elements)
+	return card2("🔁 恢复历史会话", elements)
 }
 
 func HelpCard(agentName string) JSONCard {

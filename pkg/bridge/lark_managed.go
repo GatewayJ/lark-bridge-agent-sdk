@@ -1522,6 +1522,22 @@ func (i *managedLarkIntake) sendCommandCardResponse(ctx context.Context, msg app
 
 func (i *managedLarkIntake) commandResponseCard(ctx context.Context, response CommandResponse) map[string]any {
 	switch response.Kind {
+	case CommandResponseResume:
+		if response.Resume == nil || response.Resume.Applied {
+			return nil
+		}
+		entries := make([]appcardkit.ResumeEntry, 0, len(response.Resume.Entries))
+		for _, entry := range response.Resume.Entries {
+			updated := ""
+			if entry.UpdatedAt > 0 {
+				updated = time.UnixMilli(entry.UpdatedAt).UTC().Format("2006-01-02 15:04 UTC")
+			}
+			entries = append(entries, appcardkit.ResumeEntry{
+				SessionID: entry.Token, DisplayID: entry.DisplayID, Preview: entry.Preview,
+				Detail: entry.Detail, RelTime: updated, Current: entry.Current,
+			})
+		}
+		return appcardkit.ResumeCard(response.Resume.CWD, entries)
 	case CommandResponseConfig:
 		if response.Config == nil {
 			return nil

@@ -41,7 +41,6 @@ func TestCardKitTemplateFacades(t *testing.T) {
 			Scope:         "oc_group",
 			ChatMode:      "group",
 		}),
-		ResumeCardKit("/repo", []CardKitResumeEntry{{SessionID: "session-1", Preview: "hello", RelTime: "now"}}),
 		HelpCardKit("Codex"),
 	}
 	for i, card := range cards {
@@ -125,4 +124,17 @@ func mustMarshalCardKit(t *testing.T, card CardKitJSON) string {
 		t.Fatalf("marshal card: %v", err)
 	}
 	return string(payload)
+}
+
+func TestResumeCardKitFacadeUsesCardKit2(t *testing.T) {
+	card := ResumeCardKit("/repo", []CardKitResumeEntry{{SessionID: "resume-token", Preview: "hello", RelTime: "now"}})
+	if card["schema"] != "2.0" {
+		t.Fatalf("schema = %v, want 2.0", card["schema"])
+	}
+	payload := mustMarshalCardKit(t, card)
+	for _, want := range []string{`"body":`, `"behaviors":`, `"type":"callback"`, `"cmd":"resume.use"`, `"arg":"resume-token"`} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("missing %s in %s", want, payload)
+		}
+	}
 }

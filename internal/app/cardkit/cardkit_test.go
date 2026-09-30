@@ -176,7 +176,6 @@ func TestTemplateBuildersMatchTypeScriptTemplateShells(t *testing.T) {
 			Scope:         "oc_group",
 			ChatMode:      "group",
 		}),
-		ResumeCard("/repo", []ResumeEntry{{SessionID: "session-123456", Preview: "hello", RelTime: "1m ago", LineCount: 3}}),
 		HelpCard("Codex"),
 	}
 	for i, card := range cards {
