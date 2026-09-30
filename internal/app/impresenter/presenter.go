@@ -107,6 +107,7 @@ type Input struct {
 	FinalAnswerOnly   bool
 	PrivateChat       bool
 	OnUserActionError func(context.Context, error)
+	OnProgressError   func(context.Context, error)
 	SendAgentCard     func(context.Context, map[string]any) error
 	BeforeFinal       func(context.Context, cardrender.RunState) error
 	// ResumeProgress restores ordinary progress rendering if a separate process
@@ -160,7 +161,10 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 	}
 	if !input.DeferUntilDone {
 		if err := startProgress(); err != nil {
-			return state, err
+			if input.OnProgressError != nil {
+				input.OnProgressError(ctx, err)
+			}
+			input.DeferUntilDone = true
 		}
 	}
 	resumeProgress := func(live bool) error {
@@ -171,7 +175,12 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 		}
 		if live && input.DeferUntilDone {
 			input.DeferUntilDone = false
-			return startProgress()
+			if err := startProgress(); err != nil {
+				if input.OnProgressError != nil {
+					input.OnProgressError(ctx, err)
+				}
+				input.DeferUntilDone = true
+			}
 		}
 		return nil
 	}
@@ -298,6 +307,12 @@ func Present(ctx context.Context, input Input) (cardrender.RunState, error) {
 		cardStream = newCardStreamState(state)
 		markdownStream = newMarkdownStreamState()
 	}
+	metadata := make(map[string]any, len(input.Options.Metadata)+1)
+	for key, value := range input.Options.Metadata {
+		metadata[key] = value
+	}
+	metadata["finalDelivery"] = true
+	input.Options.Metadata = metadata
 	finalCardState := state
 	if input.FinalAnswerOnly && state.Status == cardrender.StatusSucceeded && !hasCardContent(finalAnswerOnlyState(state)) {
 		if actionPending && len(actions.delivered) > 0 {

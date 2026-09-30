@@ -488,6 +488,9 @@ func (t *OAPITransport) SendMessage(ctx context.Context, req SendMessageRequest)
 	if err := validateThreadSend(req.Options); err != nil {
 		return SendResult{}, err
 	}
+	if final, _ := req.Options.Metadata["finalDelivery"].(bool); final {
+		return t.sendFinalMessage(ctx, req)
+	}
 	if req.Options.ReplyInThread {
 		msgType, content, err := directMessageContent(req.Content)
 		if err != nil {
@@ -517,6 +520,9 @@ func (t *OAPITransport) SendCard(ctx context.Context, req SendCardRequest) (Send
 	}
 	if err := validateThreadSend(req.Options); err != nil {
 		return SendResult{}, err
+	}
+	if final, _ := req.Options.Metadata["finalDelivery"].(bool); final {
+		return t.sendFinalMessage(ctx, SendMessageRequest{ChatID: req.ChatID, Content: MessageContent{Card: req.Card}, Options: req.Options})
 	}
 	if req.Options.ReplyInThread {
 		return t.sendDirect(ctx, req.ChatID, "interactive", cardJSON, req.Options)
@@ -1690,6 +1696,7 @@ func (t *OAPITransport) sendDirect(ctx context.Context, recipientID string, msgT
 	if opts.ReplyTo != "" {
 		body := larkim.NewReplyMessageReqBodyBuilder().
 			MsgType(msgType).
+			Uuid(deliveryID(opts)).
 			Content(content)
 		if opts.ReplyInThread {
 			body.ReplyInThread(true)
@@ -1719,6 +1726,7 @@ func (t *OAPITransport) sendDirect(ctx context.Context, recipientID string, msgT
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(recipientID).
 			MsgType(msgType).
+			Uuid(deliveryID(opts)).
 			Content(content).
 			Build()).
 		Build())

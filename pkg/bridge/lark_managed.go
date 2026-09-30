@@ -897,6 +897,9 @@ type managedPresentInput struct {
 
 func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresentInput) (appcardrender.RunState, error) {
 	channel := i.presenterChannel()
+	progressError := func(ctx context.Context, err error) {
+		i.recordError(ctx, err, map[string]any{"phase": "progress.delivery", "runId": input.RunID})
+	}
 	actionError := func(ctx context.Context, err error) {
 		i.recordError(ctx, err, map[string]any{"phase": "user_action.delivery", "runId": input.RunID})
 	}
@@ -913,6 +916,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 			RenderOptions:     input.RenderOptions,
 			PrivateChat:       input.PrivateChat,
 			OnUserActionError: actionError,
+			OnProgressError:   progressError,
 			SendAgentCard:     input.SendAgentCard,
 		})
 	}
@@ -945,6 +949,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 			RenderOptions:     input.RenderOptions,
 			PrivateChat:       input.PrivateChat,
 			OnUserActionError: actionError,
+			OnProgressError:   progressError,
 			SendAgentCard:     input.SendAgentCard,
 		})
 	}
@@ -954,7 +959,9 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 	cotDone := make(chan struct{})
 	go func() {
 		defer close(cotDone)
-		_ = appcot.ConsumeEvents(fanoutCtx, cotEvents, publisher, input.COTMessages)
+		if err := appcot.ConsumeEvents(fanoutCtx, cotEvents, publisher, input.COTMessages); err != nil {
+			i.recordError(fanoutCtx, err, map[string]any{"phase": "cot.complete", "runId": input.RunID})
+		}
 	}()
 	state, err := appimpresenter.Present(ctx, appimpresenter.Input{
 		Run:               presenterEventRun{events: presenterEvents, stopper: input.Run},
@@ -970,6 +977,7 @@ func (i *managedLarkIntake) presentRun(ctx context.Context, input managedPresent
 		RenderOptions:     input.RenderOptions,
 		PrivateChat:       input.PrivateChat,
 		OnUserActionError: actionError,
+		OnProgressError:   progressError,
 		SendAgentCard:     input.SendAgentCard,
 		ResumeProgress:    publisher.Degraded(),
 		OnResumeProgress:  notifyFallback,
@@ -1554,6 +1562,7 @@ func (i *managedLarkIntake) configCardOptions(ctx context.Context, view *Command
 	i.refreshRuntimeKnownChatsIfEmpty(ctx)
 	commandOptions := i.currentCommandOptions()
 	opts := appcardkit.ConfigFormOptions{
+		DefaultWorkspace:      snapshot.DefaultWorkspace,
 		MessageReply:          appcardkit.MessageReplyMode(snapshot.MessageReply),
 		ShowToolCalls:         snapshot.ShowToolCalls,
 		CotMessages:           appcardkit.CotMessagesMode(snapshot.CotMessages),

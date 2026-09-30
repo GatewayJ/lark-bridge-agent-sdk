@@ -75,6 +75,7 @@ type CardKitKnownChat struct {
 }
 
 type CardKitConfigFormOptions struct {
+	DefaultWorkspace      string
 	MessageReply          CardKitMessageReplyMode
 	ShowToolCalls         bool
 	CotMessages           CardKitCotMessagesMode

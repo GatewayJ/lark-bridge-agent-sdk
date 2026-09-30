@@ -332,19 +332,22 @@ func TestConfigCardKit2BuildersMatchTypeScriptShapeAndAccessText(t *testing.T) {
 		t.Fatalf("config form element mismatch: %#v", form)
 	}
 	fields := asSlice(t, form["elements"])
-	checkSelectInitial(t, fields[1], "message_reply", "markdown")
-	checkSelectInitial(t, fields[3], "show_tool_calls", "hide")
-	checkSelectInitial(t, fields[5], "cot_messages", "detailed")
-	if got := asMap(t, fields[7])["default_value"]; got != "7" {
+	if field := asMap(t, fields[1]); field["name"] != "default_workspace" || field["tag"] != "input" {
+		t.Fatalf("workspace field = %#v", field)
+	}
+	checkSelectInitial(t, fields[3], "message_reply", "markdown")
+	checkSelectInitial(t, fields[5], "show_tool_calls", "hide")
+	checkSelectInitial(t, fields[7], "cot_messages", "detailed")
+	if got := asMap(t, fields[9])["default_value"]; got != "7" {
 		t.Fatalf("max_concurrent_runs default_value = %v, want 7", got)
 	}
-	if got := asMap(t, fields[9])["default_value"]; got != "15" {
+	if got := asMap(t, fields[11])["default_value"]; got != "15" {
 		t.Fatalf("run_idle_timeout_minutes default_value = %v, want 15", got)
 	}
-	checkSelectInitial(t, fields[11], "require_mention_in_group", "no")
-	checkSelectInitial(t, fields[13], "lark_cli_identity", "user-default")
+	checkSelectInitial(t, fields[13], "require_mention_in_group", "no")
+	checkSelectInitial(t, fields[15], "lark_cli_identity", "user-default")
 
-	panel := asMap(t, fields[15])
+	panel := asMap(t, fields[17])
 	if panel["tag"] != "collapsible_panel" || panel["expanded"] != false {
 		t.Fatalf("access panel mismatch: %#v", panel)
 	}
@@ -363,7 +366,7 @@ func TestConfigCardKit2BuildersMatchTypeScriptShapeAndAccessText(t *testing.T) {
 	if !strings.Contains(adminsText, "<at id=\"ou_admin_1\"></at>") {
 		t.Fatalf("admins mention text mismatch: %q", adminsText)
 	}
-	buttons := asSlice(t, asMap(t, fields[16])["columns"])
+	buttons := asSlice(t, asMap(t, fields[18])["columns"])
 	submit := asMap(t, asSlice(t, asMap(t, buttons[0])["elements"])[0])
 	if submit["form_action_type"] != "submit" || callbackCmd(t, submit) != "config.submit" {
 		t.Fatalf("config submit button mismatch: %#v", submit)

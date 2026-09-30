@@ -160,6 +160,14 @@ func ListThreadHistory(ctx context.Context, opts ListOptions) ([]ThreadHistoryEn
 }
 
 func (p *Provider) List(ctx context.Context, opts ListOptions) ([]ThreadHistoryEntry, error) {
+	result, err := p.query(ctx, opts, requestPayload(p.clientInfo, opts))
+	if err != nil {
+		return nil, err
+	}
+	return parseThreadListResponse(result)
+}
+
+func (p *Provider) query(ctx context.Context, opts ListOptions, payload string) (json.RawMessage, error) {
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = p.defaultTimeout
@@ -189,7 +197,7 @@ func (p *Provider) List(ctx context.Context, opts ListOptions) ([]ThreadHistoryE
 	}()
 
 	lines := scanLines(proc.Stdout())
-	if _, err := io.WriteString(proc.Stdin(), requestPayload(p.clientInfo, opts)); err != nil {
+	if _, err := io.WriteString(proc.Stdin(), payload); err != nil {
 		cleanupProcess(proc, waitCh)
 		return nil, historyError(ErrSpawnFailed, errorMessage(err), err)
 	}
@@ -236,12 +244,8 @@ func (p *Provider) List(ctx context.Context, opts ListOptions) ([]ThreadHistoryE
 				}
 				return nil, historyError(ErrAppServer, msg, nil)
 			}
-			entries, err := parseThreadListResponse(response.Result)
 			cleanupProcess(proc, waitCh)
-			if err != nil {
-				return nil, err
-			}
-			return entries, nil
+			return response.Result, nil
 		}
 	}
 }

@@ -235,6 +235,7 @@ type Options struct {
 	SessionCatalog    *appsession.Catalog
 	Workspaces        WorkspaceStore
 	Executor          Executor
+	CodexUsage        func(context.Context) (string, error)
 	CodexHistory      CodexHistoryProvider
 	ClaudeHistory     ClaudeHistoryProvider
 	Processes         ProcessLister
@@ -338,6 +339,7 @@ type ResumeEntry struct {
 }
 
 type StatusView struct {
+	CodexUsage          string                          `json:"codexUsage,omitempty"`
 	ProfileName         string                          `json:"profileName"`
 	CWD                 string                          `json:"cwd,omitempty"`
 	SessionID           string                          `json:"sessionId,omitempty"`
@@ -1140,6 +1142,14 @@ func (s *Service) handleStatus(ctx context.Context, req Request) (Response, erro
 		Scope:               req.ScopeID,
 		ChatMode:            req.ChatMode,
 	}
+	if isCodex {
+		status.CodexUsage = "暂时无法获取"
+		if s.opts.CodexUsage != nil {
+			if usage, err := s.opts.CodexUsage(ctx); err == nil && usage != "" {
+				status.CodexUsage = usage
+			}
+		}
+	}
 	return Response{
 		Handled:  true,
 		Command:  "/status",
@@ -1533,6 +1543,21 @@ func (s *Service) submitConfig(ctx context.Context, req Request) (*ConfigView, e
 		view.Unsupported = true
 		return view, nil
 	}
+	defaultWorkspace := view.Snapshot.DefaultWorkspace
+	_, workspaceChanged := req.FormValue["default_workspace"]
+	if workspaceChanged {
+		requested := strings.TrimSpace(formString(req.FormValue, "default_workspace"))
+		if !isAbsoluteOrTilde(requested) {
+			view.Failure = "工作目录需要填写绝对路径或 ~/目录。"
+			return view, nil
+		}
+		resolved := workspace.ResolveWorkingDirectory(expandTilde(requested))
+		if !resolved.OK {
+			view.Failure = resolved.UserVisible
+			return view, nil
+		}
+		defaultWorkspace = resolved.CWDRealpath
+	}
 	currentPrefs := map[string]any{
 		"messageReply":          view.Snapshot.MessageReply,
 		"showToolCalls":         view.Snapshot.ShowToolCalls,
@@ -1558,6 +1583,9 @@ func (s *Service) submitConfig(ctx context.Context, req Request) (*ConfigView, e
 		identityApplied = true
 	}
 	if err := s.mutateRootProfile(func(root *configstore.RootConfig, prof *configstore.ProfileConfig) error {
+		if workspaceChanged {
+			prof.Workspaces.Default = defaultWorkspace
+		}
 		prefs := copyAnyMap(prof.Preferences)
 		prefs["messageReply"] = messageReply
 		prefs["messageReplyMigrated"] = true
@@ -2893,7 +2921,7 @@ func statusMarkdown(status *StatusView) string {
 	if session == "" {
 		session = "(无)"
 	}
-	return fmt.Sprintf("**profile** %s\n**cwd** %s\n**session** %s\n**agent** %s\n**%s** %s\n**lark-cli** %s\n**active scopes** %s\n**comment scopes** %s\n**owner API** %s",
+	result := fmt.Sprintf("**profile** %s\n**cwd** %s\n**session** %s\n**agent** %s\n**%s** %s\n**lark-cli** %s\n**active scopes** %s\n**comment scopes** %s\n**owner API** %s",
 		status.ProfileName,
 		status.CWD,
 		session,
@@ -2905,6 +2933,10 @@ func statusMarkdown(status *StatusView) string {
 		strings.Join(status.ActiveCommentScopes, ","),
 		status.OwnerState,
 	)
+	if status.CodexUsage != "" {
+		result += "\n**Codex usage**\n" + status.CodexUsage
+	}
+	return result
 }
 
 func formatAgo(d time.Duration) string {

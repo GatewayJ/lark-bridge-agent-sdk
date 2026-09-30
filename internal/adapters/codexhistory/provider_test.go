@@ -395,6 +395,14 @@ func (p *fakeProcess) handleLine(line string) error {
 				"platformOs":     "macos",
 			},
 		})
+	case "account/rateLimits/read":
+		if p.runner.noListResponse {
+			return nil
+		}
+		if p.runner.failList {
+			return p.writeJSON(map[string]any{"id": id, "error": map[string]any{"message": "unavailable"}})
+		}
+		return p.writeJSON(map[string]any{"id": id, "result": map[string]any{"rateLimits": map[string]any{"planType": "plus", "primary": map[string]any{"usedPercent": 25, "windowDurationMins": 300}}}})
 	case "thread/list":
 		if p.runner.noListResponse {
 			return nil

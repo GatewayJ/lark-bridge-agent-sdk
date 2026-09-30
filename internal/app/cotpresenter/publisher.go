@@ -3,6 +3,7 @@ package cotpresenter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -156,19 +157,31 @@ func (p *Publisher) Finish(ctx context.Context, reason string) error {
 		return nil
 	}
 	p.stopTimer()
-	_ = p.Flush(ctx)
+	flushErr := p.Flush(ctx)
 	p.mu.Lock()
 	disabled := p.disabled
 	ref := p.ref
 	p.mu.Unlock()
-	if disabled || ref.COTID == "" || ref.MessageID == "" {
+	if ref.COTID == "" || ref.MessageID == "" {
 		return nil
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = "done"
 	}
-	_ = p.client.CompleteMessageCOT(ctx, CompleteRequest{Ref: ref, Reason: reason})
-	return nil
+	if disabled {
+		reason = "error"
+	}
+	var completeErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return errors.Join(flushErr, ctx.Err())
+		}
+		completeErr = p.client.CompleteMessageCOT(ctx, CompleteRequest{Ref: ref, Reason: reason})
+		if completeErr == nil {
+			break
+		}
+	}
+	return errors.Join(flushErr, completeErr)
 }
 
 func (p *Publisher) Flush(ctx context.Context) error {

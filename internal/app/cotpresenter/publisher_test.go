@@ -121,8 +121,8 @@ func TestConsumeEventsMarksPublisherDegradedWhenUpdateFails(t *testing.T) {
 		textEvent("working"),
 		agentport.AgentEvent{Type: agentport.EventDone, TerminationReason: agentport.TerminationNormal},
 	), publisher, ModeBrief)
-	if err != nil {
-		t.Fatalf("ConsumeEvents returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected update error")
 	}
 	if !publisher.Disabled() {
 		t.Fatalf("publisher disabled = false, want true")
@@ -130,12 +130,12 @@ func TestConsumeEventsMarksPublisherDegradedWhenUpdateFails(t *testing.T) {
 	if got := publisher.DegradedReason(); got != "field validation failed" {
 		t.Fatalf("degraded reason = %q", got)
 	}
-	if got := client.completedReasons(); len(got) != 0 {
-		t.Fatalf("completed reasons = %#v, want none", got)
+	if got := client.completedReasons(); len(got) != 1 || got[0] != "error" {
+		t.Fatalf("completed reasons = %#v, want error", got)
 	}
 }
 
-func TestPublisherIgnoresCompleteFailure(t *testing.T) {
+func TestPublisherReturnsCompleteFailure(t *testing.T) {
 	client := &fakeCOTClient{completeErr: errors.New("complete failed")}
 	publisher := NewPublisher(PublisherOptions{
 		Client:         client,
@@ -148,15 +148,19 @@ func TestPublisherIgnoresCompleteFailure(t *testing.T) {
 	if !publisher.Start(context.Background()) {
 		t.Fatalf("Start returned false")
 	}
-	if err := publisher.Finish(context.Background(), "done"); err != nil {
-		t.Fatalf("Finish returned error: %v", err)
+	if err := publisher.Finish(context.Background(), "done"); !errors.Is(err, client.completeErr) {
+		t.Fatalf("Finish error = %v", err)
+	}
+	if client.completeAttempts != 3 {
+		t.Fatalf("complete attempts = %d", client.completeAttempts)
 	}
 }
 
 type fakeCOTClient struct {
-	createErr   error
-	updateErr   error
-	completeErr error
+	createErr        error
+	updateErr        error
+	completeErr      error
+	completeAttempts int
 
 	creates   []CreateRequest
 	updates   []UpdateRequest
@@ -182,6 +186,7 @@ func (c *fakeCOTClient) UpdateMessageCOT(_ context.Context, req UpdateRequest) e
 }
 
 func (c *fakeCOTClient) CompleteMessageCOT(_ context.Context, req CompleteRequest) error {
+	c.completeAttempts++
 	if c.completeErr != nil {
 		return c.completeErr
 	}

@@ -53,6 +53,7 @@ type KnownChat struct {
 }
 
 type ConfigFormOptions struct {
+	DefaultWorkspace      string
 	MessageReply          MessageReplyMode
 	ShowToolCalls         bool
 	CotMessages           CotMessagesMode
@@ -188,6 +189,8 @@ func ConfigFormCard(opts ConfigFormOptions) JSONCard {
 			"tag":  "form",
 			"name": "config_form",
 			"elements": []any{
+				markdown("**默认工作目录（cwd）**\n填写已存在的绝对路径或 ~/目录。当前 profile 中未通过 /cd 指定目录的会话使用此目录。"),
+				textInput("default_workspace", opts.DefaultWorkspace, "/path/to/project"),
 				markdown("**消息回复方式**\n_纯文本:agent 跑完一次性发出,不流式,体感最轻_\n_消息卡片:轻量流式 markdown 卡片,飞书原生打字机动画_"),
 				selectStatic("message_reply", string(messageReply), []any{
 					option("纯文本", "text"),
@@ -241,6 +244,7 @@ func ConfigSavedCard(opts ConfigFormOptions) JSONCard {
 		identityLabel = "允许用户身份"
 	}
 	content := "✅ **偏好已保存**\n\n" +
+		fmt.Sprintf("**默认工作目录**: `%s`\n", escapeCode(opts.DefaultWorkspace)) +
 		fmt.Sprintf("**消息回复方式**:%s\n", replyLabel) +
 		fmt.Sprintf("**工具调用显示**:`%s`\n", showHide(opts.ShowToolCalls)) +
 		fmt.Sprintf("**COT 过程消息**:`%s`\n", cotMessagesLabel(opts.CotMessages)) +

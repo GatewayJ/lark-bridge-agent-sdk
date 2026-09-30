@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/adapters/codexhistory"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/commands"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/app/runexecutor"
 	"github.com/GatewayJ/lark-bridge-agent-sdk/internal/domain/access"
@@ -81,6 +82,7 @@ type CommandResumeEntry struct {
 }
 
 type CommandStatusView struct {
+	CodexUsage          string                     `json:"codexUsage,omitempty"`
 	ProfileName         string                     `json:"profileName"`
 	CWD                 string                     `json:"cwd,omitempty"`
 	SessionID           string                     `json:"sessionId,omitempty"`
@@ -543,14 +545,17 @@ func commandServiceWithState(c *Client, state *commandServiceState, opts Command
 		}
 	}
 	return commands.New(commands.Options{
-		ProfileName:       defaultProfileName(opts.ProfileName),
-		ProfileConfig:     profileConfig,
-		Capability:        c.cap,
-		RuntimeControls:   toInternalRuntimeControls(opts.RuntimeControls),
-		Sessions:          c.sessions,
-		SessionCatalog:    c.catalog,
-		Workspaces:        commandWorkspaceAdapter{delegate: workspaces},
-		Executor:          c.executor,
+		ProfileName:     defaultProfileName(opts.ProfileName),
+		ProfileConfig:   profileConfig,
+		Capability:      c.cap,
+		RuntimeControls: toInternalRuntimeControls(opts.RuntimeControls),
+		Sessions:        c.sessions,
+		SessionCatalog:  c.catalog,
+		Workspaces:      commandWorkspaceAdapter{delegate: workspaces},
+		Executor:        c.executor,
+		CodexUsage: func(ctx context.Context) (string, error) {
+			return codexhistory.New(codexhistory.ProviderOptions{}).Usage(ctx, c.codexHistoryListOptions(CodexHistoryOptions{}, profileConfig))
+		},
 		CodexHistory:      codexHistoryAdapter{client: c, profileConfig: profileConfig},
 		Processes:         processListerAdapter{delegate: opts.Processes},
 		ProcessController: processController,

@@ -670,8 +670,8 @@ func TestManagedLarkIntakePresentRunSendsCOTDegradedNoticeAndFinalReply(t *testi
 	if err != nil {
 		t.Fatalf("presentRun returned error: %v", err)
 	}
-	if len(transport.CompletedCOTSnapshot()) != 0 {
-		t.Fatalf("completed COTs = %#v, want none after update failure", transport.CompletedCOTSnapshot())
+	if completed := transport.CompletedCOTSnapshot(); len(completed) != 1 || completed[0].Reason != "error" {
+		t.Fatalf("completed COTs = %#v, want error after update failure", completed)
 	}
 	messages := transport.SentMessageSnapshot()
 	if len(messages) != 2 {
@@ -768,8 +768,8 @@ func TestManagedLarkIntakePresentRunRestoresProgressDuringCOTFailure(t *testing.
 			if strings.Contains(string(final), "cat document") == tc.hideTools {
 				t.Fatalf("final tool visibility = %s, hideTools = %v", final, tc.hideTools)
 			}
-			if len(transport.CompletedCOTSnapshot()) != 0 {
-				t.Fatal("completed a failed COT")
+			if completed := transport.CompletedCOTSnapshot(); len(completed) != 1 || completed[0].Reason != "error" {
+				t.Fatalf("expected COT error completion, got %#v", completed)
 			}
 			notices := 0
 			for _, message := range transport.SentMessageSnapshot() {
